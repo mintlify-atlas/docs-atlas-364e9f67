@@ -1,0 +1,243 @@
+---
+title: "Character System Overview — Shattered Reality Docs"
+sidebarTitle: "Overview"
+description: "A developer guide to the two-role character system, Config schema, SprintConfig fields, and how Characters.luau discovers and normalizes every actor."
+---
+
+The character system in Shattered Reality is split into two asymmetric roles — **Killers** and **Survivors** — each loaded from `ReplicatedStorage.Systems.Characters` at runtime by the `Characters.luau` data module. Every character folder contains at minimum a `Config` ModuleScript (or a `Config/init.luau`) and an optional `Manager`/`Behavior` script. Configs are deep-cloned, normalized, and merged with skin overrides before being handed to gameplay systems, so all downstream code can read a stable, unified table regardless of which skin is active.
+
+<CardGroup cols={2}>
+  <Card title="Killers" icon="skull" href="/characters/killers">
+    High-health hunters with sprint-based pursuit, unique chase music layers, and aggressive ability kits — JohnDoe, c00lkidd, TheClown, Wirefly, and !Pursuer.
+  </Card>
+  <Card title="Survivors" icon="person-running" href="/characters/survivors">
+    Objective-focused evaders with 100 HP, stance systems, and utility abilities — Kane, Brickbattler, JaneDoe, Nova, and !Vintage.
+  </Card>
+</CardGroup>
+
+## Roles at a glance
+
+<Tabs>
+  <Tab title="Killers">
+    Killers have massively inflated health pools and sprint tuning designed for sustained pursuit. Their configs always carry a `ChaseConfig` block that controls the detection radius and time-layered chase-music cues.
+
+    | Property | Typical value |
+    |---|---|
+    | `MaxHealth` | 1 000 (standard), 3 500 (!Pursuer) |
+    | `Class` | `Rushdown`, `Zoner`, `Strategic`, `Chaser`, `Killer` |
+    | `SprintSpeed` | 28.5 – 30 |
+    | `ChaseConfig.Radius` | 90 – 100 studs |
+
+  </Tab>
+  <Tab title="Survivors">
+    Survivors are faster relative to stamina and lean on utility over raw damage. Some characters (Kane) expose per-stance `SprintConfig` overrides that swap in at runtime.
+
+    | Property | Typical value |
+    |---|---|
+    | `MaxHealth` | 95 – 100 (standard), 500 (!Vintage) |
+    | `Class` | `Sentinel`, `Survivalist` |
+    | `SprintSpeed` | 23 – 29 |
+    | `ChaseConfig` | Not present |
+
+  </Tab>
+</Tabs>
+
+## Discovery and loading
+
+`Characters.luau` runs entirely in `ReplicatedStorage` and is safe to `require` on both server and client.
+
+```lua
+-- ReplicatedStorage/Modules/Data/Characters.luau (simplified)
+local charactersRoot = ReplicatedStorage:WaitForChild("Systems"):WaitForChild("Characters")
+local skinsRoot      = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("Skins")
+
+-- Folders under Systems/Characters/Killers and Systems/Characters/Survivors
+-- are iterated alphabetically; each child Folder with a Config ModuleScript
+-- is loaded and normalized into Characters.Killers / Characters.Survivors.
+Characters.Killers   = load_character_folder(charactersRoot:WaitForChild("Killers"))
+Characters.Survivors = load_character_folder(charactersRoot:WaitForChild("Survivors"))
+```
+
+The loader accepts two Config layouts:
+
+- `CharacterFolder/Config.luau` — a bare ModuleScript named `Config`.
+- `CharacterFolder/Config/init.luau` — a folder named `Config` with an `init` ModuleScript inside (used when the config needs child Instances like VFX parts attached directly to the script).
+
+<Note>
+  Folders whose name starts with `!` (e.g. `!Pursuer`, `!Vintage`) are still discovered and loaded normally. The `!` prefix is a naming convention signalling a limited-access or work-in-progress character — the loader strips leading `!` characters when performing case-insensitive name matching via `normalize_search_text`.
+</Note>
+
+## Config schema
+
+Every character Config returns a plain Luau table. The fields below are treated as canonical by `normalize_actor_config` and downstream gameplay systems.
+
+<Accordion title="Info">
+  Human-readable metadata displayed in menus.
+
+  ```lua
+  Info = {
+      DisplayName = "John Doe",   -- shown in UI
+      Description = "The Corrupted Pursuer",
+  },
+  ```
+</Accordion>
+
+<Accordion title="Class, Price, MaxHealth">
+
+  ```lua
+  Class     = "Rushdown",  -- used by Characters:IsActorInClass()
+  Price     = 0,           -- unlock cost (0 = free)
+  MaxHealth = 1000,        -- copied to actor_config.MaxHealth
+  ```
+
+  `normalize_actor_config` also accepts the legacy key `Health` and promotes it to `MaxHealth` automatically.
+</Accordion>
+
+<Accordion title="SprintConfig">
+  Controls all stamina and movement speed values for the character. Both `SprintConfig` and the alias `Sprint` are accepted; the normalizer keeps them in sync.
+
+  <ParamField path="Stamina" type="number">
+    Starting stamina value on spawn.
+  </ParamField>
+  <ParamField path="MaxStamina" type="number">
+    Upper cap on the stamina bar.
+  </ParamField>
+  <ParamField path="WalkSpeed" type="number">
+    Base movement speed while not sprinting.
+  </ParamField>
+  <ParamField path="SprintSpeed" type="number">
+    Movement speed while the sprint key is held and stamina is available.
+  </ParamField>
+  <ParamField path="SprintLoss" type="number">
+    Stamina drained per second while sprinting.
+  </ParamField>
+  <ParamField path="SprintGain" type="number">
+    Stamina regenerated per second while not sprinting.
+  </ParamField>
+
+  ```lua
+  SprintConfig = {
+      Stamina     = 115,
+      MaxStamina  = 115,
+      WalkSpeed   = 9.5,
+      SprintSpeed = 30,
+      SprintLoss  = 12.5,
+      SprintGain  = 28,
+  },
+  ```
+
+  Characters that expose stance systems (e.g. Kane) embed per-stance `SprintConfig` tables inside a `Stances` subtable, which the stance manager swaps in at runtime.
+</Accordion>
+
+<Accordion title="AbilityInfo">
+  A dictionary keyed by ability name. Both `AbilityInfo` and the alias `Abilities` are accepted and kept in sync by the normalizer.
+
+  Common per-ability fields:
+
+  | Field | Description |
+  |---|---|
+  | `Name` | Display name shown in the HUD |
+  | `Type` | Slot identifier: `AbilityM1`, `Ability1` … `Ability5` |
+  | `Cooldown` | Base cooldown in seconds |
+  | `Damage` | Base damage dealt on hit |
+  | `HitboxSize` | `Vector3` extents of the server-side hitbox |
+  | `HitboxAmount` | Maximum hitbox samples per activation (alias: `Amount`) |
+  | `HitboxDelay` | Seconds between hitbox samples (alias: `Delay`) |
+  | `MaxCharges` | If present, ability uses a charge system |
+  | `ChargeRegen` | Seconds per charge regenerated (alias: `ChargeRegenTime`) |
+
+  ```lua
+  AbilityInfo = {
+      Slash = {
+          Name    = "Slash",
+          Type    = "AbilityM1",
+          Cooldown = 1.7,
+          Damage  = 16,
+          HitboxAmount = 16,   -- normalized → Amount
+          HitboxDelay  = 0.011, -- normalized → Delay
+      },
+  },
+  ```
+</Accordion>
+
+<Accordion title="ChaseConfig (Killers only)">
+  Drives the proximity-based chase music system. `Radius` is the detection range in studs; `Layers` maps each music layer to a time-range within the audio track.
+
+  ```lua
+  ChaseConfig = {
+      Radius = 100,
+      ID     = "rbxassetid://...",  -- chase music asset
+      Layers = {
+          [1] = { Start = 0,     End = 10.13 },
+          [2] = { Start = 10.13, End = 20.24 },
+          [3] = { Start = 20.24, End = 40.45 },
+          [4] = { Start = 40.45, End = 90    },
+      },
+  },
+  ```
+</Accordion>
+
+<Accordion title="Footsteps, Sounds, Animations, Instances">
+  All three sections are passed through to the character Manager/Behavior unmodified.
+
+  - **`Footsteps`** — ordered array of `rbxassetid://` strings; the footstep system cycles through them.
+  - **`Sounds`** — free-form dictionary of ability/event sound IDs.
+  - **`Animations`** — dictionary of animation IDs, often with nested tables for multi-phase abilities.
+  - **`Instances`** — references to child Instances (VFX parts, UI frames) embedded directly in the Config script hierarchy via `script.ChildName`.
+</Accordion>
+
+## Ability alias normalization
+
+Before a config is returned to any caller, `normalize_ability_config` rewrites deprecated field names to their canonical forms:
+
+```lua
+local ability_aliases = {
+    ChargeRegenTime = "ChargeRegen",
+    HitboxAmount    = "Amount",
+    HitboxDelay     = "Delay",
+}
+```
+
+If an ability has `MaxCharges` but no `ChargeRegen`, the normalizer automatically sets `ChargeRegen = Cooldown` as a sensible default. This means you can always read `config.Abilities["MyAbility"].Amount` and `config.Abilities["MyAbility"].Delay` regardless of what key the raw config used.
+
+## LMS stamina caps
+
+`Characters.Global` holds server-wide tuning applied on top of individual configs during Last Man Standing mode:
+
+```lua
+Characters.Global = {
+    StaminaTuning = {
+        LMSCaps = {
+            Survivor = { Sprint = 120, Stamina = 120 },
+            Killer   = { Sprint = 132, Stamina = 132 },
+        },
+    },
+}
+```
+
+These caps are applied by the gameplay layer; the `Characters` module itself only stores the values.
+
+## API reference
+
+```lua
+local Characters = require(ReplicatedStorage.Modules.Data.Characters)
+
+-- Fetch a normalized killer config (with skin applied if provided)
+local config = Characters.GetActorConfig("Killer", "JohnDoe", "Default")
+
+-- Fetch a single ability config, normalized
+local slash = Characters:GetAbilityConfig("Killer", "JohnDoe", "Slash")
+
+-- List all registered names for a role
+local killerNames = Characters.ListNames("Killer")
+
+-- Resolve a fuzzy skin name query to the canonical folder name
+local skinName, candidates = Characters.ResolveSkinName("Survivor", "Kane", "yourself")
+
+-- Check whether an actor belongs to a class
+local isRushdown = Characters:IsActorInClass("Killer", "JohnDoe", "Rushdown")
+```
+
+<Tip>
+  Always call `GetActorConfig` (not `GetCharacterConfig`) when you need the final merged result including skin overrides, rig reference, and `SkinName`. Use `GetCharacterConfig` only when you explicitly want the base config without any skin layer applied.
+</Tip>

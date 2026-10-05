@@ -1,0 +1,380 @@
+---
+title: "Server-Side Anticheat System for Shattered Reality"
+sidebarTitle: "Anticheat"
+description: "Pluggable server-side anticheat with five built-in checks, per-player state management, ability request validation, and a violation callback pipeline."
+---
+
+The anticheat system runs entirely on the server, sampling every player's character state on each `Heartbeat` tick. It is built around a registry of check modules — each module owns its own per-player state and calls `BaseCheck:Strike()` when a violation threshold is reached. Strikes accumulate until `Penalty.MaxViolations` is hit, at which point the check reports a violation payload and kicks the offending player. A pluggable `OnViolation` callback lets your game logic respond to (or override) that pipeline.
+
+<Warning>
+  Never set `config.Enabled = false` in a live public or private server build.
+  Disabling the anticheat removes all movement and ability guards, making speed hacking, flying, and noclipping trivially exploitable in a production game.
+</Warning>
+
+---
+
+## Constructor
+
+`Anticheat.new(config)` creates and returns a new anticheat instance. The five default checks — `Backshotting`, `Flinging`, `Flying`, `Noclipping`, and `SpeedHacking` — are registered automatically during construction. Call `:Init()` once your game is ready to start ticking.
+
+```luau
+local Anticheat = require(ServerScriptService.Modules.Infrastructure.Anticheat)
+
+local ac = Anticheat.new({
+    Enabled = true,
+    AbilityThrottle = myThrottleObject, -- optional rate-limiter passed to AbilityRequestValidator
+    OnViolation = function(self, payload)
+        warn(
+            "[AC]",
+            payload.player.Name,
+            payload.checkName,
+            payload.flag,
+            payload.violationCount .. "/" .. payload.maxViolations
+        )
+    end,
+})
+
+ac:Init() -- begins Heartbeat ticking and PlayerRemoving cleanup
+```
+
+<Note>
+  `Anticheat.new` accepts `nil` as `config`. When `config` is nil the system defaults to enabled with no `OnViolation` handler — violations still kick players but are not logged anywhere.
+</Note>
+
+### Config fields
+
+<ParamField path="config.Enabled" type="boolean" default="true">
+  Master switch for the entire anticheat instance. When `false`, `Init()` exits early and no checks are ticked. Individual checks are also gated through this flag via `IsCheckEnabled`.
+</ParamField>
+
+<ParamField path="config.AbilityThrottle" type="object | nil">
+  Optional rate-limiter object passed directly to `AbilityRequestValidator.new`. The validator calls `AbilityThrottle:Allow(key)` where `key` is `"<userId>:<abilityName>"`. Pass `nil` to skip throttle enforcement.
+</ParamField>
+
+<ParamField path="config.OnViolation" type="function | nil">
+  `function(self: Anticheat, payload: table)` — called via `pcall` whenever a check's strike count reaches `Penalty.MaxViolations`. See [Violation payload](#violation-payload) for the payload shape.
+</ParamField>
+
+---
+
+## Methods
+
+### `Anticheat:Init()`
+
+Hooks `RunService.Heartbeat` to call `Anticheat:Tick()` each frame and `Players.PlayerRemoving` to destroy per-player check states. Safe to call multiple times — subsequent calls are no-ops once `Initialized` is true.
+
+---
+
+### `Anticheat:Tick()`
+
+Iterates every current player and, for each registered check that `IsCheckEnabled` returns true for, fetches or creates that player's check state and calls `state:Check(player)`. Errors inside individual checks are caught with `pcall` and printed as warnings so a broken check cannot halt the whole pipeline.
+
+---
+
+### `Anticheat:RegisterCheck(name, module)`
+
+<ParamField path="name" type="string" required>
+  The unique registry key for this check, e.g. `"SpeedHacking"`. Used as the key for `IsCheckEnabled`, `SetCheckEnabled`, and per-player state storage.
+</ParamField>
+
+<ParamField path="module" type="table" required>
+  A check module table. It must expose a `Configuration` table with an `Enabled` boolean field. It should expose a `CreateState(player, manager, name)` factory (or fall back to `BaseCheck.new`). The returned state object must have a `:Check(player)` method.
+</ParamField>
+
+Enabled status is derived from `module.Configuration.Enabled` at registration time. Call `SetCheckEnabled` afterward to change it at runtime.
+
+---
+
+### `Anticheat:IsCheckEnabled(name): boolean`
+
+Returns `true` only when both the instance-level `Enabled` flag and the per-check enabled flag are `true`. Use this before doing any work that depends on a specific check being active.
+
+---
+
+### `Anticheat:SetCheckEnabled(name, enabled): boolean`
+
+Toggles a single check at runtime. When `enabled` is false, every player's existing state for that check is destroyed immediately (calling `:Destroy()` on the state if the method exists). Returns `false` if the check name is not in the registry.
+
+---
+
+### `Anticheat:ReportViolation(payload)`
+
+Calls `self.OnViolation(self, payload)` inside a `pcall`. If `OnViolation` is not a function the call is a silent no-op. This is the single exit point for all check violations — custom checks should call it (or call `BaseCheck:Strike()` which calls it automatically).
+
+---
+
+### `Anticheat:SanitizeAbilityPayload(player, payload)`
+
+Delegates to `PayloadSanitizer.SanitizeAbilityPayload`. See [PayloadSanitizer](#payloadsanitizer) below.
+
+---
+
+### `Anticheat:ValidateAbilityRequest(player, actor, abilityName, request)`
+
+Delegates to the internal `AbilityRequestValidator:Validate`. See [AbilityRequestValidator](#abilityrequestvalidator) below.
+
+---
+
+### `Anticheat:DestroyPlayerStates(player)`
+
+Destroys all check states for a specific player, calling `:Destroy()` on each state that has that method. Called automatically by the `PlayerRemoving` connection set up in `:Init()`.
+
+---
+
+### `Anticheat:Destroy()`
+
+Disconnects the `Heartbeat` and `PlayerRemoving` connections and destroys all per-player check states for every current player. Resets `Initialized` to `false`.
+
+---
+
+## Violation payload
+
+When `BaseCheck:Strike()` triggers a kick it passes the following table to `ReportViolation`:
+
+| Field | Type | Description |
+|---|---|---|
+| `player` | `Player` | The offending player instance. |
+| `checkName` | `string` | Registry key of the check that fired. |
+| `flag` | `string` | Short identifier from `Descriptor.Flag`, e.g. `"004"`. |
+| `reason` | `string` | Human-readable message combining `Descriptor.Message` and the flag. |
+| `violationCount` | `number` | The player's cumulative strike count for this check. |
+| `maxViolations` | `number` | The `Penalty.MaxViolations` threshold that was reached. |
+| `kicked` | `boolean` | Whether the player was still in the server when the kick was issued. |
+
+---
+
+## BaseCheck interface
+
+Every check state inherits from `BaseCheck`. You interact with it through the following:
+
+### `BaseCheck.new(module, player, manager, name)`
+
+Creates a plain state table for `player` using `module` as the data source. All non-function fields from `module` are copied onto the state (so `Configuration`, `Descriptor`, and `Penalty` are available via `self`). Sets `ViolationCount = 0`.
+
+### `BaseCheck:Strike(): boolean`
+
+Increments `ViolationCount`. When `ViolationCount >= Penalty.MaxViolations` it constructs the violation payload, calls `manager:ReportViolation(payload)`, kicks the player, and returns `true`. Returns `false` when the threshold has not yet been reached.
+
+The Backshotting check overrides `Strike()` with its own punishment logic — it kills and ragdolls the character rather than kicking the player directly.
+
+---
+
+## Default checks
+
+<AccordionGroup>
+  <Accordion title="SpeedHacking — Flag 004" icon="gauge-high">
+    Detects players whose measured horizontal displacement per tick exceeds the server-derived allowed speed. Allowed speed is computed as:
+
+    ```
+    max(DefaultWalkSpeed, SprintSpeed, WalkSpeed, 11) + BaseTolerance(6)
+    ```
+
+    or, if the root's assembly velocity is already high:
+
+    ```
+    horizontalVelocity + VelocityTolerance(8)
+    ```
+
+    The check is skipped entirely while the character has the `Stunned`, `RagdollActive`, `Executing`, `Grabbed`, or `NoSpeedhack` attributes set, or while the humanoid is dead.
+
+    A teleport grace window (reset whenever displacement ≥ `TeleportGraceDistance = 20` studs) suppresses false positives during legitimate server teleports. `ConsecutiveViolations` must reach `ViolationGoal = 5` before `Strike()` is called, and they decay to 0 if no violation is seen within `ViolationDecayTime = 1.25` seconds.
+
+    **Configuration**
+
+    | Key | Default | Description |
+    |---|---|---|
+    | `Enabled` | `true` | Master toggle for this check. |
+    | `SpawnGraceTime` | `1.5 s` | Grace period after a character change or teleport. |
+    | `TeleportGraceDistance` | `20 studs` | Displacement above which a teleport grace is granted. |
+    | `MinSampleTime` | `0.08 s` | Minimum elapsed time between samples before speed is measured. |
+    | `BaseTolerance` | `6 studs/s` | Flat tolerance added to the expected walk speed. |
+    | `VelocityTolerance` | `8 studs/s` | Tolerance added on top of the root's current assembly velocity. |
+    | `ViolationGoal` | `5` | Consecutive violations required before `Strike()` fires. |
+    | `ViolationDecayTime` | `1.25 s` | Time without a violation before `ConsecutiveViolations` resets. |
+    | `Penalty.MaxViolations` | `3` | Strikes before the player is kicked. |
+  </Accordion>
+
+  <Accordion title="Flying — Flag 002" icon="plane">
+    Detects players who remain airborne for longer than `MaxAirTime = 1.6` seconds without valid ground contact while their vertical speed is below `HoverVerticalSpeed = 2.5` studs/s (a non-zero vertical speed is consistent with a natural fall and is excluded).
+
+    Ground contact is determined first by checking `humanoid.FloorMaterial ~= Enum.Material.Air` and then, if that fails, by firing a `GroundCheckDistance = 4.5` stud downward raycast from the `HumanoidRootPart` that excludes the character and the `workspace.Players` folder.
+
+    The check is skipped when the character's root is anchored or when any of `Stunned`, `RagdollActive`, `Executing`, `Grabbed`, or `ImprobMode` attributes are set.
+
+    **Configuration**
+
+    | Key | Default | Description |
+    |---|---|---|
+    | `Enabled` | `true` | Master toggle. |
+    | `SpawnGraceTime` | `1.5 s` | Grace period after a character change or teleport. |
+    | `TeleportGraceDistance` | `20 studs` | Displacement threshold for granting a teleport grace. |
+    | `GroundCheckDistance` | `4.5 studs` | Downward raycast length for ground detection. |
+    | `MaxAirTime` | `1.6 s` | Maximum continuous airborne time before a violation is counted. |
+    | `HoverVerticalSpeed` | `2.5 studs/s` | Vertical speed above which the check is suppressed (natural fall). |
+    | `ViolationGoal` | `3` | Consecutive violations before `Strike()` fires. |
+    | `ViolationDecayTime` | `1.5 s` | Time without a violation before count resets. |
+    | `Penalty.MaxViolations` | `3` | Strikes before the player is kicked. |
+  </Accordion>
+
+  <Accordion title="Noclipping — Flag 003" icon="cube">
+    Detects players clipping through solid geometry using a `workspace:Blockcast` sweep from the character's last recorded `CFrame` along the displacement vector to the current position. The sweep box is the root's size minus a small `SweepPadding = Vector3.new(0.5, 0.5, 0.5)` to reduce false contacts.
+
+    A hit is considered blocking only when the part `CanCollide == true` and `Transparency < 1`. Legitimate stair-stepping is detected by checking whether the hit's normal Y component is ≥ `StepNormalYGrace = 0.35` and the vertical displacement is between 0 and `StepHeightGrace = 4`, suppressing the violation.
+
+    The check ignores teleports (displacement ≥ `TeleportGraceDistance = 18`), sub-threshold moves (< `MinMoveDistance = 0.35` studs), and characters with `Stunned`, `RagdollActive`, `Executing`, `Grabbed`, `ImprobMode`, or `IsCharging` attributes set.
+
+    **Configuration**
+
+    | Key | Default | Description |
+    |---|---|---|
+    | `Enabled` | `true` | Master toggle. |
+    | `SpawnGraceTime` | `1.5 s` | Grace period after a character change. |
+    | `TeleportGraceDistance` | `18 studs` | Displacement threshold treated as a teleport. |
+    | `MinMoveDistance` | `0.35 studs` | Minimum displacement to trigger a blockcast. |
+    | `ViolationGoal` | `3` | Consecutive violations before `Strike()` fires. |
+    | `ViolationDecayTime` | `1.5 s` | Time without a violation before count resets. |
+    | `SweepPadding` | `(0.5, 0.5, 0.5)` | Subtracted from root size for the blockcast box. |
+    | `StepHeightGrace` | `4 studs` | Maximum upward Y displacement to treat as a stair step. |
+    | `StepNormalYGrace` | `0.35` | Minimum normal Y of a blocking hit to treat as a step surface. |
+    | `MinGroundedHorizontalMove` | `0.2 studs` | Minimum horizontal move for stair-step suppression to apply. |
+    | `Penalty.MaxViolations` | `3` | Strikes before the player is kicked. |
+  </Accordion>
+
+  <Accordion title="Flinging — Flag 001" icon="tornado">
+    Detects players who are being flung by an external physics exploit. A violation is counted when **both** of the following thresholds are exceeded at the same time:
+
+    - Horizontal assembly velocity ≥ `HorizontalVelocityThreshold = 115 studs/s`
+    - Angular assembly velocity magnitude ≥ `AngularVelocityThreshold = 60 rad/s`
+
+    Additionally, travel distance over the sample period must be ≥ `MinTravelDistance = 10` studs, which filters out jitter with high instantaneous velocity but minimal movement.
+
+    The check is suppressed while the humanoid is seated, getting up, falling down, or in platform-standing state, and while `Stunned`, `RagdollActive`, `Executing`, or `Grabbed` attributes are set.
+
+    **Configuration**
+
+    | Key | Default | Description |
+    |---|---|---|
+    | `Enabled` | `true` | Master toggle. |
+    | `SpawnGraceTime` | `1.5 s` | Grace period after a character change or teleport. |
+    | `TeleportGraceDistance` | `28 studs` | Displacement threshold for a teleport grace. |
+    | `HorizontalVelocityThreshold` | `115 studs/s` | Minimum horizontal speed to flag. |
+    | `AngularVelocityThreshold` | `60 rad/s` | Minimum angular speed to flag. |
+    | `MinSampleTime` | `0.08 s` | Minimum elapsed time before measuring velocity. |
+    | `MinTravelDistance` | `10 studs` | Minimum displacement per sample period to count a violation. |
+    | `ViolationGoal` | `5` | Consecutive violations before `Strike()` fires. |
+    | `ViolationDecayTime` | `2.5 s` | Time without a violation before count resets. |
+    | `Penalty.MaxViolations` | `3` | Strikes before the player is kicked. |
+  </Accordion>
+
+  <Accordion title="Backshotting — Flag 067" icon="person-running">
+    Detects players who rapidly alternate their movement direction (forward/backward) while facing the rear of another player's character — a pattern typical of exploit-assisted melee hit manipulation commonly called "backshotting".
+
+    Detection logic:
+
+    1. A short raycast (`MaxDistance = 5` studs) is fired from the attacker's `HumanoidRootPart` in its look direction. If the ray hits a part belonging to another character, a rear-dot product is calculated between the attacker's position and the victim's look vector. A dot value below `RearDotThreshold = -0.2` confirms the contact is from behind.
+    2. While rear contact is maintained, direction switches (forward ↔ backward at speed ≥ `MinForwardSpeed = 3` studs/s) are counted.
+    3. If `SwitchGoal = 5` switches occur within a `SwitchWindow = 3` second window and the detection cooldown (`DetectionCooldown = 1.0` s) has elapsed, a strike is fired.
+
+    **Punishment differs from other checks.** Instead of kicking the player, Backshotting overrides `Strike()` to kill the offending character directly, setting `DeathRagdollDuration = 4` and `RespawnDelay = 4` on the character before zeroing the humanoid's health.
+
+    **Configuration**
+
+    | Key | Default | Description |
+    |---|---|---|
+    | `Enabled` | `true` | Master toggle. |
+    | `MinForwardSpeed` | `3 studs/s` | Minimum signed speed to count a directional movement. |
+    | `MaxDistance` | `5 studs` | Raycast length for rear-contact detection. |
+    | `RearDotThreshold` | `-0.2` | Dot product below which contact is considered rear-facing. |
+    | `SwitchGoal` | `5` | Direction switches required within the window to trigger. |
+    | `SwitchWindow` | `3 s` | Time window in which switches are counted. |
+    | `PersistTime` | `0.25 s` | How long rear contact is maintained after the ray misses. |
+    | `DetectionCooldown` | `1.0 s` | Minimum time between consecutive detections. |
+    | `PunishRagdollDuration` | `4 s` | `DeathRagdollDuration` attribute set on the character. |
+    | `PunishRespawnDelay` | `4 s` | `RespawnDelay` attribute set on the character. |
+    | `Penalty.MaxViolations` | `3` | Strike count before the character is killed. |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## AbilityRequestValidator
+
+`AbilityRequestValidator` throttles incoming ability fire requests before any game logic runs. It is created internally by `Anticheat.new` using `config.AbilityThrottle` and exposed via `Anticheat:ValidateAbilityRequest`.
+
+```luau
+local ok, failReason, ability = ac:ValidateAbilityRequest(player, actor, "Slash", requestPayload)
+if not ok then
+    -- failReason is one of: "missing_character", "emoting", "missing_actor",
+    -- "throttled", "ability_locked", "active_cancel_context", "unknown_ability"
+    return
+end
+-- `ability` is the resolved ability object from the actor's AbilityManager
+```
+
+### Validation gates (in order)
+
+1. `player.Character` must exist and be parented to the game.
+2. The character must not have the `IsEmoting` attribute set.
+3. `actor` must be non-nil.
+4. If `AbilityThrottle` is provided, `AbilityThrottle:Allow("<userId>:<abilityName>")` must return `true`.
+5. `actor.AbilitiesDisabled` must not be `true` and `actor:CanUseAbility()` must return `true`.
+6. `AbilityCancel.HasActive(character, abilityName)` must return `false` (no active cancel context).
+7. `actor.AbilityManager:GetAbility(abilityName)` must return a valid ability.
+
+---
+
+## PayloadSanitizer
+
+`PayloadSanitizer.SanitizeAbilityPayload(player, payload)` is the first line of defence for any ability network request. Call it on the raw client payload before passing data to game systems.
+
+```luau
+local clean = ac:SanitizeAbilityPayload(player, rawPayload)
+if not clean then
+    return -- payload was structurally invalid
+end
+-- clean.Ability           -- string, validated non-empty
+-- clean.ClientPressedCFrame -- CFrame or nil (clamped to ≤20 studs from server HRP)
+-- clean.AimPlatform       -- string or nil
+-- clean.PlacementData     -- table or nil
+```
+
+The sanitizer accepts either a plain string (treated as the ability name) or a table with optional `PressedCFrame`, `AimPlatform`, and `PlacementData` fields. If `PressedCFrame` deviates more than `MAX_PRESSED_CFRAME_DISTANCE = 20` studs from the server-side `HumanoidRootPart`, it is replaced with the server HRP's `CFrame`. Returns `nil` if the ability field is not a non-empty string.
+
+---
+
+## Full setup example
+
+```luau
+-- ServerScriptService/GameSetup.server.luau
+local ServerScriptService = game:GetService("ServerScriptService")
+local Anticheat = require(ServerScriptService.Modules.Infrastructure.Anticheat)
+
+local ac = Anticheat.new({
+    Enabled = true,
+    OnViolation = function(self, payload)
+        local msg = string.format(
+            "[Anticheat] %s violated %s (flag %s) — strike %d/%d, kicked: %s",
+            payload.player.Name,
+            payload.checkName,
+            tostring(payload.flag),
+            payload.violationCount,
+            payload.maxViolations,
+            tostring(payload.kicked)
+        )
+        warn(msg)
+        -- Forward to your analytics or moderation webhook here
+    end,
+})
+
+ac:Init()
+
+-- Disable a check at runtime for a specific test scenario
+ac:SetCheckEnabled("Backshotting", false)
+
+-- Re-enable it when done
+ac:SetCheckEnabled("Backshotting", true)
+```
+
+<Tip>
+  For performance-sensitive test scenarios where legitimate characters exceed normal speed (cutscenes, ability dashes, or forced teleports) prefer setting the character attribute `NoSpeedhack = true` temporarily rather than disabling the entire `SpeedHacking` check.
+</Tip>

@@ -1,0 +1,258 @@
+---
+title: "DataHandler: ProfileStore-Backed Player Persistence"
+sidebarTitle: "Data Handler"
+description: "DataHandler manages all persistent player data using ProfileStore, exposes typed Delta functions for client access, and normalizes profiles on load."
+---
+
+DataHandler is the server-side module responsible for loading, normalizing, and persisting every player's data through [ProfileStore](https://madstudioroblox.github.io/ProfileStore/). It owns the canonical data schema (`DataHandler.Template`), exposes three Delta functions for clients to read and mutate settings, and writes all settings back to the live `Profile.Data` table on every save. Settings are additionally mirrored as player `Attribute` values (prefixed `Setting_`) so that other server systems can read them without a round-trip through DataHandler.
+
+<Note>
+  DataHandler follows the standard Initializer lifecycle. Its `:Init()` method registers the Delta handlers and wires `Players.PlayerAdded` / `Players.PlayerRemoving` connections. There is no `:Start()` method.
+</Note>
+
+---
+
+## Delta Interface
+
+DataHandler exposes three Delta functions. All three are declared and handled inside DataHandler itself — clients should call them via `Delta.Function` references acquired through the shared DeltaRegistry.
+
+| Event | Direction | Args | Returns |
+|---|---|---|---|
+| `GetData` | Client → Server | `Instance` (the requesting player) | `Table` (`{ Data = profile.Data }`) |
+| `GetSettings` | Client → Server | *(none)* | `Table` (full `profile.Data` including `Settings`) |
+| `SaveSettings` | Client → Server | `Table` (settings payload) | `Boolean`, `String` (success flag, message) |
+
+```luau
+-- Declared in DataHandler.luau
+local GetData     = Delta.Function("GetData",     {Delta.Instance}, {Delta.Table})
+local GetSettings = Delta.Function("GetSettings", nil,              {Delta.Table})
+local SaveSettings = Delta.Function("SaveSettings", {Delta.Table},  {Delta.Boolean, Delta.String})
+```
+
+---
+
+## Data Template
+
+`DataHandler.Template` is the default structure reconciled into every new (and existing) profile by ProfileStore's `:Reconcile()`. The full schema is reproduced below.
+
+<Accordion title="Top-Level Fields">
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `Fragments` | `number` | `0` | In-game currency |
+| `Bloodlust` | `number` | `1` | Killer-selection weighting score |
+| `KillerChance` | `number` | `0` | Additional killer chance modifier |
+| `ConsecutiveKillerRounds` | `number` | `0` | Consecutive rounds played as killer |
+| `EquippedKiller` | `string` | `"JohnDoe"` | Currently active killer character name |
+| `EquippedSurvivor` | `string` | `"Brickbattler"` | Currently active survivor character name |
+| `PurchasedKillers` | `{ string }` | `{"JohnDoe", "c00lkidd"}` | Unlocked killer names |
+| `PurchasedSurvivors` | `{ string }` | `{"Brickbattler", "Vintage"}` | Unlocked survivor names |
+| `SuppressAutoInventoryGrants` | `boolean` | `false` | Prevents automatic default-character grants |
+| `Settings` | `table` | `{}` | Nested settings (see sections below) |
+
+</Accordion>
+
+<Accordion title="EquippedEmotes">
+
+```luau
+EquippedEmotes = {
+    [1] = {"IMissTheQuiet", "JevilDance", "Static", "WithFriends", "Aura"},
+    [2] = {},
+}
+```
+
+`[1]` is the primary emote wheel; `[2]` is a secondary slot. During normalization, the `"Aura"` emote is always guaranteed to be present in slot `[1]`.
+
+</Accordion>
+
+<Accordion title="SelectedSkins and CharacterAccessOverrides">
+
+```luau
+SelectedSkins = {
+    Killers   = {},   -- actorName -> skinName
+    Survivors = {},
+}
+CharacterAccessOverrides = {
+    Killers   = {},   -- actorName -> true (special access)
+    Survivors = {},
+}
+```
+
+`CharacterAccessOverrides` is used server-side to grant players access to characters that are not in the default visible set — for example, limited-time or administrative unlocks. Access can be set via `DataHandler:SetCharacterAccessOverride(player, actorType, actorName, enabled)`.
+
+</Accordion>
+
+<Accordion title="HitIndicator">
+
+```luau
+HitIndicator = {
+    Scale       = 1,
+    Color       = {1, 1, 1},         -- RGB table, white
+    StrokeColor = {0.15, 0.15, 0.15},
+}
+```
+
+Clients can customise the hit indicator scale and colours through `SaveSettings`. The server clamps `Scale` to `[1, 100]`.
+
+</Accordion>
+
+<Accordion title="DevSettings">
+
+```luau
+DevSettings = {
+    DevMode    = false,
+    ShowHitbox = false,
+}
+```
+
+These are saved per-profile but only acted upon by developer tooling. `ShowHitbox = true` enables the in-game hitbox debug visualizer for that player.
+
+</Accordion>
+
+---
+
+## BOOLEAN_SETTINGS
+
+All boolean settings are stored under `profile.Data.Settings` and replicated as `player:SetAttribute("Setting_<key>", value)`.
+
+| Key | Description |
+|---|---|
+| `AFKMode` | Marks the player as AFK; disables killer eligibility |
+| `DisableBeingKiller` | Sets Bloodlust to `-1`, opting out of killer selection |
+| `CenterStaminaBar` | Moves stamina bar to screen centre |
+| `LowHpOverlay` | Enables vignette overlay at low health |
+| `EpilepsyMode` | Reduces flashing effects |
+| `SurvivorDisplay` | Shows the survivor list HUD element |
+| `SurvivorDisplayIconsOnly` | Hides survivor names, shows only icons |
+| `SurvivorDisplaySide` | Controls which side of the screen the display appears on |
+| `DisablePointsCashNotifs` | Suppresses point and cash pop-up notifications |
+| `ShowOwnClientServerHitboxes` | Renders the player's own hitbox debug overlay |
+| `AutoSpectate` | Automatically enters spectator mode on death |
+| `DisableDeathBlackScreen` | Removes the full-screen blackout on death |
+| `ConsolePromptMotion` | Enables motion blur on console interaction prompts |
+| `ConsolePromptButtonText` | Shows button labels on console interaction prompts |
+| `EmoteSyncing` | Allows other players to sync emotes |
+| `DisableEmoteSFX` | Mutes emote sound effects |
+| `DisableEmoteVFX` | Hides emote visual effects |
+| `PotatoMode` | Globally reduces particle and VFX density |
+| `ReduceScreenEffects` | Disables post-processing effects |
+| `HideDamageIndicators` | Hides incoming damage number indicators |
+| `HideFragments` | Hides fragment count from the HUD (also sets `PrivacyHideFragments` attribute) |
+| `BrokenRagdolls` | Enables ragdoll-launch on kill |
+| `NothingIsReal` | Lore/secret toggle |
+
+---
+
+## NUMBER_SETTINGS
+
+Number settings are clamped server-side to their declared ranges on every save.
+
+<ParamField path="FieldOfView" type="number [20, 80]">
+  Player field of view in degrees.
+</ParamField>
+
+<ParamField path="CameraSwayAdjust" type="number [0, 8]">
+  Intensity of camera sway during movement.
+</ParamField>
+
+<ParamField path="InventorySwayAdjust" type="number [0, 8]">
+  Intensity of inventory / tool sway.
+</ParamField>
+
+<ParamField path="ConsoleCameraSensitivity" type="number [25, 200]">
+  Horizontal camera sensitivity for gamepad input.
+</ParamField>
+
+<ParamField path="ConsoleVerticalSensitivity" type="number [25, 200]">
+  Vertical camera sensitivity for gamepad input.
+</ParamField>
+
+<ParamField path="ConsolePromptScale" type="number [70, 130]">
+  UI scale percentage for console interaction prompts.
+</ParamField>
+
+<ParamField path="MusicVolume" type="number [0, 100]">
+  Background music volume.
+</ParamField>
+
+<ParamField path="SfxVolume" type="number [0, 100]">
+  Sound effects volume.
+</ParamField>
+
+<ParamField path="VoicelineVolume" type="number [0, 100]">
+  Character voiceline volume.
+</ParamField>
+
+---
+
+## STRING_SETTINGS (Keybinds)
+
+All keybind settings are stored as strings and set as `player:SetAttribute("Setting_<key>", value)` on save. Each action has a Keyboard and a Gamepad variant.
+
+| Keyboard Key | Gamepad Key |
+|---|---|
+| `SprintKeybindKeyboard` | `SprintKeybindGamepad` |
+| `ShiftLockKeybindKeyboard` | `ShiftLockKeybindGamepad` |
+| `InteractKeybindKeyboard` | `InteractKeybindGamepad` |
+| `EmoteKeybindKeyboard` | `EmoteKeybindGamepad` |
+| `MainAbilityKeybindKeyboard` | `MainAbilityKeybindGamepad` |
+| `Ability1KeybindKeyboard` | `Ability1KeybindGamepad` |
+| `Ability2KeybindKeyboard` | `Ability2KeybindGamepad` |
+| `Ability3KeybindKeyboard` | `Ability3KeybindGamepad` |
+| `Ability4KeybindKeyboard` | `Ability4KeybindGamepad` |
+| `Ability5KeybindKeyboard` | `Ability5KeybindGamepad` |
+
+---
+
+## Profile Lifecycle
+
+```luau
+-- Called on PlayerAdded (and deferred for any players already in-game at Init time)
+function DataHandler:_playerAdded(player)
+    local profile = PlayerStore:StartSessionAsync(`{player.UserId}`, {
+        Cancel = function()
+            return player.Parent ~= Players
+        end,
+    })
+
+    if not profile then
+        player:Kick("Profile load fail - Please rejoin")
+        return
+    end
+
+    profile:AddUserId(player.UserId)
+    profile:Reconcile()           -- fills missing template keys
+    profile.OnSessionEnd:Connect(function()
+        self.Profiles[player] = nil
+        player:Kick("Profile session end - Please rejoin")
+    end)
+
+    self.Profiles[player] = profile
+    normalizeProfileData(player, profile.Data)
+    applySettingsAttributes(player, profile.Data.Settings)
+end
+```
+
+On every profile load `normalizeProfileData` runs a series of normalization passes to handle data migrations, ensure default characters are present in inventory, and validate that equipped characters actually exist in the `CharacterCatalog`. If an equipped character is no longer valid, it falls back to `"JohnDoe"` / `"Brickbattler"`.
+
+---
+
+## Server-Side Access
+
+Other server modules read profile data via:
+
+```luau
+-- Immediate lookup (returns nil if profile is not yet loaded)
+local profile = DataHandler:GetData(player)
+
+-- Blocking lookup with timeout
+local profile = DataHandler:WaitForData(player, 10)
+
+if profile and profile.Data then
+    local fragments = profile.Data.Fragments
+end
+```
+
+<Warning>
+  Never read `profile.Data` directly from a client script. All client access must go through the `GetData` or `GetSettings` Delta functions, which return a safe snapshot rather than the live mutable table.
+</Warning>

@@ -1,0 +1,99 @@
+{
+  "projectType": "saas",
+  "projectName": "Shattered Reality",
+  "projectDescription": "A Roblox horror-survival game built in Luau where survivors face off against killers across multiple maps and gamemodes, featuring a modular character system, server-authoritative hitboxes, anticheat, and a custom networking layer.",
+  "theme": "aspen",
+  "primaryColor": "#8B1A1A",
+  "lightColor": "#C23B3B",
+  "darkColor": "#3D0000",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Gameplay",
+            "pages": [
+              "gameplay/gamemodes",
+              "gameplay/round-lifecycle",
+              "gameplay/maps",
+              "gameplay/status-effects"
+            ]
+          },
+          {
+            "group": "Characters",
+            "pages": [
+              "characters/overview",
+              "characters/killers",
+              "characters/survivors",
+              "characters/skins"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Core Systems",
+            "pages": [
+              "systems/delta-network",
+              "systems/initializer",
+              "systems/data-handler",
+              "systems/hitbox-system"
+            ]
+          },
+          {
+            "group": "Adding Content",
+            "pages": [
+              "guide/adding-a-killer",
+              "guide/adding-a-survivor",
+              "guide/adding-a-map",
+              "guide/adding-a-gamemode"
+            ]
+          },
+          {
+            "group": "Infrastructure",
+            "pages": [
+              "infrastructure/anticheat",
+              "infrastructure/admin-commands",
+              "infrastructure/soft-shutdown"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Killer vs. Survivor asymmetric gameplay with multiple gamemodes (Classic, Double Trouble, Powerhouse, One Bounce)",
+    "Modular character system with per-character Config + Manager + Ability files",
+    "Server-authoritative hitbox system with client-side snapshots for latency compensation",
+    "DeltaNetwork custom networking layer with type validation, rate limiting, and middleware",
+    "Initializer lifecycle system (Init → Start) for module loading on both server and client",
+    "Status effects engine supporting Bleed, Blindness, Burning, Slowness, Stunned, Poisoned, and more",
+    "Built-in anticheat with checks for speed hacking, flying, noclipping, flinging, and backshotting",
+    "ProfileStore-based persistent player data (fragments, equipped characters, keybind settings)",
+    "17 selectable maps with per-map lighting configs and optional objectives",
+    "Large cosmetic catalog: 70+ emotes and dozens of character skins"
+  ],
+  "publicApiSurface": [
+    "Initializer:LoadModules(moduleScripts, bucketName, options) — bulk-require and lifecycle-call a set of ModuleScripts",
+    "DeltaNetwork (Delta) — create/send/receive typed RemoteEvent and RemoteFunction wrappers",
+    "StatusEffects:Apply(characterName, effectName, value) / :Remove(characterName, effectName) / :Get(characterName, effectName)",
+    "Anticheat.new(config) — instantiate anticheat with configurable checks and OnViolation callback",
+    "Anticheat:RegisterCheck(name, module) — plug in a custom movement/exploit check",
+    "RoundHandler — orchestrates intermission, map loading, actor spawning, and round-end via RoundUtil sub-modules",
+    "DataHandler.Template — player data schema (Fragments, EquippedActors, settings, keybinds)",
+    "Character Config schema — Info, Class, MaxHealth, SprintConfig, AbilityInfo, ChaseConfig, Sounds, Animations",
+    "Ability Server/Client split — each ability exposes a Server.luau and Client.luau loaded by the character Manager",
+    "AdminActions:Kick / :AddLocalBan / :RemoveLocalBan — runtime player moderation helpers",
+    "Gamemode interface — Name, MinPlayers, RoundTime, StartRound(context, session), optional ApplyActorModifiers"
+  ]
+}

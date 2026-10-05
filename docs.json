@@ -1,72 +1,86 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Shattered Reality",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#8B1A1A",
+    "light": "#C23B3B",
+    "dark": "#3D0000"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/cenowillceno/SRNEW"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/cenowillceno/SRNEW"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Gameplay",
+            "pages": [
+              "gameplay/gamemodes",
+              "gameplay/round-lifecycle",
+              "gameplay/maps",
+              "gameplay/status-effects"
+            ]
+          },
+          {
+            "group": "Characters",
+            "pages": [
+              "characters/overview",
+              "characters/killers",
+              "characters/survivors",
+              "characters/skins"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Core Systems",
+            "pages": [
+              "systems/delta-network",
+              "systems/initializer",
+              "systems/data-handler",
+              "systems/hitbox-system"
+            ]
+          },
+          {
+            "group": "Adding Content",
+            "pages": [
+              "guide/adding-a-killer",
+              "guide/adding-a-survivor",
+              "guide/adding-a-map",
+              "guide/adding-a-gamemode"
+            ]
+          },
+          {
+            "group": "Infrastructure",
+            "pages": [
+              "infrastructure/anticheat",
+              "infrastructure/admin-commands",
+              "infrastructure/soft-shutdown"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

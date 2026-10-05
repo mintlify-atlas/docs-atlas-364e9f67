@@ -1,0 +1,81 @@
+---
+title: "Introduction to Shattered Reality — Roblox Horror Survival"
+sidebarTitle: "Introduction"
+description: "An overview of Shattered Reality: an asymmetric Roblox horror-survival game in Luau, covering player roles, core systems, and how to navigate these docs."
+---
+
+Shattered Reality is an asymmetric horror-survival game built entirely in Luau on Roblox. One player takes the role of the **Killer** — a powerful, ability-driven character with a single objective: hunt down and eliminate every Survivor before time runs out. The remaining players are **Survivors**, working cooperatively to outlast, outmaneuver, and ultimately escape the Killer. The two sides have fundamentally different win conditions, movement rules, ability sets, and UI states, which means almost every system in the codebase must branch on role at runtime.
+
+## Player Roles
+
+<CardGroup cols={2}>
+  <Card title="Killer" icon="skull">
+    A single, mechanically complex predator. The Killer has access to a unique ability loadout, faster movement, and special interactions. All hitbox validation and damage dealing runs server-side — clients never author authoritative damage.
+  </Card>
+  <Card title="Survivors" icon="users">
+    Up to several players cooperating to survive. Survivors share resources, can be downed, rescued, and eliminated. Their objective is to outlast the Killer or fulfill round-specific escape conditions.
+  </Card>
+</CardGroup>
+
+## Key Technical Highlights
+
+Shattered Reality is built on a custom framework that owns the full stack from networking to data persistence. The highlights below are what every developer on the project should be familiar with before touching live code.
+
+<AccordionGroup>
+  <Accordion title="DeltaNetwork — typed remote communication">
+    All client-server communication flows through **DeltaNetwork** (`ReplicatedStorage/Modules/Network/DeltaNetwork`), a singleton networking layer written in strict Luau. Delta instances are created by name and are shared across the boundary via a global singleton guard (`_G.__DELTA_SINGLETON`). Every remote carries declared `ArgTypes` that are validated on receipt, and per-instance or global rate limiting is enforced entirely on the server. Middleware chains can be attached per Delta to handle authentication or logging before a handler is invoked.
+  </Accordion>
+  <Accordion title="Initializer lifecycle — require → Init → Start">
+    Every server and client module goes through a three-phase lifecycle managed by `ReplicatedStorage/Initializer`. Modules are first `require`d in bulk, then all successfully loaded modules have their `Init` method called, and finally `Start` is called (if `CallStart` is enabled). Modules that set the `NoInitializing` instance attribute are skipped entirely. Any module whose `require` call exceeds `CompileThreshold` seconds is recorded in `Initializer.SlowModules` and surfaced in the startup banner.
+  </Accordion>
+  <Accordion title="Server-authoritative hitboxes and anticheat">
+    Hit registration is never trusted from the client. The `Infrastructure/Anticheat` module runs on the server alongside `ActorHandler` and `ProjectileHandler` to validate spatial claims before applying damage. Clients submit hit requests; the server independently verifies geometry, timing, and rate limits before confirming.
+  </Accordion>
+  <Accordion title="ProfileStore data persistence">
+    Player data is persisted through **ProfileStore** (`ReplicatedStorage/Packages/ProfileStore.luau`). The `DataHandler` in `ServerScriptService/Modules/Handlers` owns profile loading and saving, ensuring all writes happen server-side and are session-locked to prevent data loss on unexpected disconnects.
+  </Accordion>
+  <Accordion title="Status effects system">
+    Gameplay status effects (slow, stun, blindness, and so on) live under `ReplicatedStorage/Systems/Gameplay/StatusEffects`. Effects are applied server-side and replicated to clients via Delta events; `StatusManager` on the client reacts to incoming state changes to drive visuals and control restrictions.
+  </Accordion>
+</AccordionGroup>
+
+## Navigating These Docs
+
+The documentation is organised into four top-level areas. Start with **Architecture** if you are new to the codebase — it explains how every service folder relates to the others and walks through the exact startup sequence. Then move to **Gamemodes** to understand round flow, and **Characters** for the Killer and Survivor data models. The **Developer Guides** section contains deep-dives into individual systems.
+
+<Note>
+  All documentation reflects the live source in `SRNEW/`. The legacy `Forsaken/` directory is an archived iteration of the project and is not covered here.
+</Note>
+
+## Quick Navigation
+
+<CardGroup cols={2}>
+  <Card
+    title="Architecture"
+    icon="sitemap"
+    href="/architecture"
+  >
+    Service hierarchy, the Initializer lifecycle, server and client startup sequences, and the full directory layout.
+  </Card>
+  <Card
+    title="Gamemodes"
+    icon="gamepad"
+    href="/gameplay/gamemodes"
+  >
+    Round flow, role assignment via KillerSelector and SurvivorSelector, win conditions, and the RoundHandler.
+  </Card>
+  <Card
+    title="Characters Overview"
+    icon="person-running"
+    href="/characters"
+  >
+    Killer and Survivor character definitions, ability systems, stat models, and how roles map to `Systems/Characters`.
+  </Card>
+  <Card
+    title="DeltaNetwork Guide"
+    icon="network-wired"
+    href="/systems/delta-network"
+  >
+    How to declare, validate, rate-limit, and consume Delta remotes across the server–client boundary.
+  </Card>
+</CardGroup>

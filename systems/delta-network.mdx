@@ -1,0 +1,301 @@
+---
+title: "DeltaNetwork: Typed Networking Layer for Shattered Reality"
+sidebarTitle: "Delta Network"
+description: "DeltaNetwork wraps Roblox RemoteEvent and RemoteFunction into strongly-typed Delta events with built-in validation, middleware, and rate limiting."
+---
+
+DeltaNetwork (referred to as `Delta` throughout the codebase) is the custom networking abstraction used across every client-server boundary in Shattered Reality. Rather than managing raw `RemoteEvent` and `RemoteFunction` instances by hand, Delta exposes a single typed interface that validates argument types at runtime, enforces per-player rate limits, runs middleware chains, and provides convenient fire-and-forget or request-response semantics. The module is a singleton stored in `_G.__DELTA_SINGLETON` so that requiring it from any context always returns the same instance.
+
+<Note>
+  Delta uses a singleton pattern. The first `require` creates the instance and stores it in `_G.__DELTA_SINGLETON`. Every subsequent `require` in the same session returns the same table, so you can safely require Delta anywhere and always receive the same registry of events.
+</Note>
+
+---
+
+## Creating an Event
+
+Events are created (or retrieved if already created) by calling `Delta` as a function or using `Delta.Event`. Both syntaxes are equivalent. The first argument is the event name; subsequent arguments are the expected argument type tokens.
+
+```luau
+local Delta = require(ReplicatedStorage.Modules.Network.DeltaNetwork)
+
+-- Functional call syntax (most common)
+local ManageStatus  = Delta("ManageStatus",  Delta.String, Delta.Table)
+local ManageVisuals = Delta("ManageVisuals", Delta.String, Delta.String, Delta.Table)
+
+-- Named helper — identical behaviour
+local HitboxTouched = Delta.Event("HitboxTouched", Delta.NumberF16)
+```
+
+If an event with the same name has already been constructed, Delta returns the existing instance rather than creating a duplicate. This means it is safe to declare the same event in multiple modules.
+
+### Available Type Tokens
+
+<CardGroup cols={3}>
+  <Card title="Delta.String" icon="text">
+    Validates `typeof(v) == "string"`
+  </Card>
+  <Card title="Delta.Number" icon="hashtag">
+    Validates `typeof(v) == "number"`. Aliases: `Delta.NumberF16`, `Delta.NumberF32`
+  </Card>
+  <Card title="Delta.Boolean" icon="toggle-on">
+    Validates `typeof(v) == "boolean"`
+  </Card>
+  <Card title="Delta.Table" icon="table">
+    Validates `typeof(v) == "table"`
+  </Card>
+  <Card title="Delta.Vector3" icon="cube">
+    Validates `typeof(v) == "Vector3"`. Alias: `Delta.Vector3F24`
+  </Card>
+  <Card title="Delta.CFrame" icon="arrows-up-down-left-right">
+    Validates `typeof(v) == "CFrame"`. Alias: `Delta.CFrameF24U8`
+  </Card>
+  <Card title="Delta.Color3" icon="palette">
+    Validates `typeof(v) == "Color3"`
+  </Card>
+  <Card title="Delta.Instance" icon="layer-group">
+    Validates `typeof(v) == "Instance"`
+  </Card>
+  <Card title="Delta.Any" icon="asterisk">
+    Always passes — skips type checking for that argument position
+  </Card>
+</CardGroup>
+
+The `F16`, `F32`, `F24`, and `U8` suffix variants are semantic annotations for compression intent. At runtime they validate identically to their base type.
+
+---
+
+## Request-Response Events
+
+To add a bidirectional response, call `:Response(...)` after creating the event and pass the expected return type tokens. This promotes the event to use a `RemoteFunction` internally.
+
+```luau
+local GetData = Delta.Function("GetData", {Delta.Instance}, {Delta.Table})
+
+-- Equivalent explicit form:
+local GetClientCFrame = Delta("GetClientCFrame", Delta.Instance)
+    :Response(Delta.CFrameF24U8)
+```
+
+`Delta.Function`, `Delta.Request`, and `Delta.Register` are all aliases that take `argTypes` and `responseTypes` as tables — useful when the event and its handler are defined in one place.
+
+---
+
+## The DeltaType Interface
+
+Every `Delta(name, ...)` call returns a `DeltaType` object. The full method set is listed below.
+
+### Subscribing to Events
+
+<ParamField path="Server:Connect(cb)" type="(Player, ...any) -> DeltaConnection">
+  Server-side subscription. The callback receives the sending `Player` as its first argument followed by the validated payload. Automatically runs validation, rate limiting, and middleware before invoking `cb`. Only valid on the server.
+
+  ```luau
+  ManageStatus.Server:Connect(function(player, statusName, statusData)
+      -- statusName is a string, statusData is a table — already validated
+  end)
+  ```
+</ParamField>
+
+<ParamField path="Client:Connect(cb)" type="(...any) -> DeltaConnection">
+  Client-side subscription. The callback receives the validated payload sent by the server. Only valid on the client.
+
+  ```luau
+  ManageVisuals.Client:Connect(function(action, target, data)
+      -- runs on every connected client that has subscribed
+  end)
+  ```
+</ParamField>
+
+<ParamField path="Connect(handler)" type="Handler -> DeltaConnection">
+  Context-aware shorthand. Delegates to `Server:Connect` when running on the server and `Client:Connect` when running on the client.
+</ParamField>
+
+### Firing Events
+
+<ParamField path="SendToServer(...)" type="() -> ()">
+  Client → Server fire. Validates args client-side before calling `RemoteEvent:FireServer`.
+</ParamField>
+
+<ParamField path="SendToClient(player, ...)" type="() -> ()">
+  Server → single client fire. Validates args then calls `RemoteEvent:FireClient`.
+</ParamField>
+
+<ParamField path="Broadcast(...)" type="() -> ()">
+  Server → all clients fire. Validates args then calls `RemoteEvent:FireAllClients`.
+</ParamField>
+
+<ParamField path="Fire(...)" type="() -> any">
+  Context-aware fire. On the server it broadcasts to all clients. On the client it sends to the server. If the event has a response, the client path returns the server's reply.
+</ParamField>
+
+<ParamField path="FireClient(player, ...)" type="() -> ()">
+  Alias for `SendToClient`. Provided for parity with vanilla Roblox naming.
+</ParamField>
+
+<ParamField path="FireAllClients(...)" type="() -> ()">
+  Alias for `Broadcast`.
+</ParamField>
+
+<ParamField path="BatchBroadcast(players, ...)" type="() -> ()">
+  Server-only. Fires the event to a specific list of `Player` instances. Useful when you need to target a subset — for example, only players whose `CharacterBeanHitboxReady` attribute is true.
+
+  ```luau
+  local viewers = {}
+  for _, p in Players:GetPlayers() do
+      if p:GetAttribute("CharacterBeanHitboxReady") then
+          viewers[#viewers + 1] = p
+      end
+  end
+  VisualizerHitbox:BatchBroadcast(viewers, boxCF, hitbox.Size, hitbox._id, amount, isOwner, source, shape)
+  ```
+</ParamField>
+
+<ParamField path="BroadcastExcept(excludedPlayer, ...)" type="() -> ()">
+  Server-only. Fires to every connected player except `excludedPlayer`.
+</ParamField>
+
+### Request-Response
+
+<ParamField path="RequestServer(...)" type="() -> any">
+  Client-only. Invokes the server handler via `RemoteFunction:InvokeServer` and returns the result. If a `Retry` config is set, it will retry up to `MaxRetries` times on failure with `DelaySeconds` between each attempt.
+</ParamField>
+
+<ParamField path="RequestClient(player, ...)" type="() -> any">
+  Server-only. Invokes the client handler via `RemoteFunction:InvokeClient(player, ...)` and returns the result.
+</ParamField>
+
+<ParamField path="Handle(handler)" type="() -> ()">
+  Registers a server-side handler function for response-based events. When called through `RequestServer`, this function receives `(player, ...)` and its return values are sent back to the client.
+
+  ```luau
+  local GetData = Delta.Function("GetData", {Delta.Instance}, {Delta.Table})
+
+  GetData:Handle(function(player)
+      local profile = DataHandler:GetData(player)
+      return { Data = profile and profile.Data or {} }
+  end)
+  ```
+</ParamField>
+
+### Configuration Chains
+
+<ParamField path="RateLimit(config)" type="self">
+  Server-only. Attaches a per-player rate limit. Returns `self` for chaining.
+
+  ```luau
+  Delta("UseActorAbility", Delta.Any)
+      :RateLimit({ MaxCalls = 10, WindowSeconds = 1 })
+  ```
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `MaxCalls` | `number` | Maximum allowed calls within the window |
+  | `WindowSeconds` | `number` | Rolling window duration in seconds |
+
+  When a player exceeds the limit the event is silently dropped and a throttled warning is printed. Rate limit data is automatically cleaned up when a player leaves.
+</ParamField>
+
+<ParamField path="UseMiddleware(fn)" type="self">
+  Appends a middleware function to the chain. Returns `self` for chaining. Middleware runs before the subscriber callback on both events and response calls.
+
+  The function signature is `(player: Player?, ...any) -> (boolean, string?)`. Return `false` plus an optional rejection message to block the event.
+
+  ```luau
+  Delta("ManageStatus", Delta.String, Delta.Table)
+      :UseMiddleware(function(player, statusName, _data)
+          if statusName == "" then
+              return false, "empty status name"
+          end
+          return true
+      end)
+  ```
+
+  Multiple middleware functions are run in insertion order. The first to return `false` stops the chain.
+</ParamField>
+
+<ParamField path="Retry(maxRetries, delaySeconds)" type="self">
+  Client-only. Configures automatic retry for `RequestServer` calls. If the underlying `InvokeServer` throws, Delta will retry up to `maxRetries` times, waiting `delaySeconds` between each attempt.
+
+  ```luau
+  GetData:Retry(3, 0.5)
+  ```
+</ParamField>
+
+### Lifecycle
+
+<ParamField path="Destroy()" type="() -> ()">
+  Cleans up the Maid, disconnects all connections managed by this instance, and removes it from the global instance registry. After calling `Destroy`, a new `Delta(name)` call with the same name will create a fresh instance.
+</ParamField>
+
+---
+
+## Real-World Usage — DeltaRegistry
+
+All events used across the game are pre-declared in `DeltaRegistry.luau` so that both server and client code always receive the same typed instance regardless of require order. A few examples from the registry:
+
+```luau
+-- Status effects and visuals (used by RoundHandler / StatusEffects)
+Delta("ManageStatus",  Delta.String, Delta.Table)
+Delta("ManageVisuals", Delta.String, Delta.String, Delta.Table)
+
+-- Hitbox visualizer pipeline
+Delta("VisualizeHitbox",
+    Delta.CFrameF24U8, Delta.Vector3F24,
+    Delta.NumberF16, Delta.NumberF16,
+    Delta.Boolean, Delta.String, Delta.String)
+Delta("HitboxTouched", Delta.NumberF16)
+
+-- Client CFrame sync for lag compensation
+Delta("GetClientCFrame", Delta.Instance):Response(Delta.CFrameF24U8)
+Delta("SetClientCFrame", Delta.Instance, Delta.CFrameF24U8, Delta.Vector3F24, Delta.Number)
+
+-- Player data
+Delta("GetData",      Delta.Instance):Response(Delta.Table)
+Delta("GetSettings"):Response(Delta.Table)
+Delta("SaveSettings", Delta.Table):Response(Delta.Boolean, Delta.String)
+```
+
+---
+
+## Bootstrap Infrastructure
+
+<Accordion title="How RemoteEvent / RemoteFunction instances are created">
+  `Bootstrap.luau` handles the actual Roblox instance management. On the server it creates (or finds) a `DeltaNetwork` folder under `ReplicatedStorage` with `Events` and `Functions` sub-folders. Each `Delta(name)` call that hasn't been seen before inserts a new `RemoteEvent` into `Events`. Calling `:Response(...)` inserts a corresponding `RemoteFunction` into `Functions`.
+
+  On the client, Bootstrap uses `WaitForChild` with a 10-second timeout so it doesn't race against the server's folder creation.
+</Accordion>
+
+---
+
+## Debugging
+
+<Tip>
+  Set `Delta.Debug = true` (or call `Delta.SetDebug(true)`) to print every incoming event to the output window. This is valuable during local testing but should be `false` in production.
+</Tip>
+
+```luau
+local Delta = require(ReplicatedStorage.Modules.Network.DeltaNetwork)
+Delta.SetDebug(true)   -- prints every Delta event with sender and args
+print(Delta.Version)   -- "v2"
+```
+
+A global rate limit can also be applied across all events:
+
+```luau
+-- Cap every player to 60 total Delta calls per second, across all events
+Delta.SetGlobalRateLimit(60)
+```
+
+---
+
+## Namespacing
+
+For large feature areas that share an event prefix, use `Delta.Namespace` to create a scoped factory:
+
+```luau
+local TowerDelta = Delta.Namespace("Tower")
+local TowerDamage        = TowerDelta("Damage",        Delta.Instance, Delta.NumberF16)
+local TowerStateChanged  = TowerDelta("StateChanged",  Delta.Instance, Delta.String, Delta.NumberF16)
+-- Equivalent to Delta("Tower/Damage", ...) and Delta("Tower/StateChanged", ...)
+```

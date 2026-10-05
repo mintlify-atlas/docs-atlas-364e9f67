@@ -1,0 +1,426 @@
+---
+title: "Status Effects — Applying and Removing Buffs/Debuffs"
+sidebarTitle: "Status Effects"
+description: "How the StatusEffects system works in Shattered Reality: GiveStatus, ClearStatus, ManageStatus network event, and every built-in effect with its level table."
+---
+
+The `StatusEffects` module lives at `ReplicatedStorage/Systems/Gameplay/StatusEffects/init.luau` and is shared between server and client. Status effects are resolved by name to `ModuleScript` children of that folder (including sub-folders such as `KillerSpecific/`). The module tracks every active effect in `StatusEffects.CurrentStatuses`, drives a single `RunService.Heartbeat` loop for tick-based effects, and synchronises state to the relevant client via the `ManageStatus` `DeltaNetwork` event.
+
+---
+
+## Core API
+
+### `StatusEffects:GiveStatus(target, data)`
+
+The primary entry point for applying an effect. **Server-only** — returns early on the client.
+
+<ParamField path="target" type="Player | Model">
+  A `Player` instance or a character `Model`. The system resolves the character automatically.
+</ParamField>
+
+<ParamField path="data" type="table">
+  Configuration table for the status to apply.
+</ParamField>
+
+<ParamField path="data.Name" type="string" required>
+  The exact name of the `ModuleScript` that implements the effect (e.g. `"Bleed"`, `"Slowness"`).
+</ParamField>
+
+<ParamField path="data.Time" type="number" required>
+  Duration in seconds. Values ≤ 0 are rejected.
+</ParamField>
+
+<ParamField path="data.Level" type="number">
+  Effect level; clamped to `[1, MaxLevel]`. Defaults to `1` or the module's own `Level` field.
+</ParamField>
+
+<ParamField path="data.TimeStackable" type="boolean">
+  When `false`, re-applying the same effect **replaces** the remaining duration instead of adding to it. Falls back to the module's `TimeStackable` field.
+</ParamField>
+
+<ParamField path="data.Source" type="Instance">
+  Optional owner reference forwarded to `Util:ApplyDamage` for damage-over-time effects.
+</ParamField>
+
+**Stacking behaviour when the effect already exists:**
+
+- `TimePast` is always reset to `0` on re-application.
+- If `TimeStackable ~= false`: duration increases (`TimeRequired += data.Time`); if `Stackable = true` the level also increments (capped at `MaxLevel`).
+- If `TimeStackable = false`: duration is replaced (`TimeRequired = data.Time`); level is set to `math.max(existing, incoming)`.
+- If the level changes, `Clear`/`Removed` is called for the old level and `Apply`/`Applied` for the new level.
+
+```luau
+-- Apply level-2 Slowness for 4 seconds to a character
+local StatusEffects = require(game.ReplicatedStorage.Systems.Gameplay.StatusEffects)
+
+StatusEffects:GiveStatus(character, {
+    Name  = "Slowness",
+    Level = 2,
+    Time  = 4,
+})
+```
+
+---
+
+### `StatusEffects:ClearStatus(target, name)`
+
+Immediately removes a single named effect from the target. Calls the effect's `Clear`/`Removed` callback and fires `ManageStatus` with `"RemoveStatus"`.
+
+```luau
+StatusEffects:ClearStatus(player, "Burning")
+```
+
+---
+
+### `StatusEffects:ClearAllStatuses(target)`
+
+Removes every active status from the target.
+
+---
+
+### `StatusEffects:PlayerHasStatus(target, name)`
+
+Returns the active status table if the effect is present, otherwise `nil`. Useful for guard checks in ability scripts.
+
+```luau
+if StatusEffects:PlayerHasStatus(player, "Stunned") then
+    return -- already stunned, don't re-apply
+end
+```
+
+---
+
+### `StatusEffects:GetKind(name)` / `:IsNegative(name)` / `:IsPositive(name)`
+
+Looks up the `Kind` field (`"Positive"` or `"Negative"`) of any registered effect module.
+
+---
+
+## `ManageStatus` Network Event
+
+`ManageStatus` is declared in `init.luau`:
+
+```luau
+local ManageStatus = Delta.Event("ManageStatus", Delta.String, Delta.Table)
+```
+
+The server fires it on the owning player (or all clients for NPC characters) with one of three modes:
+
+| Mode | When fired | Payload fields |
+|---|---|---|
+| `"CreateStatus"` | Effect applied for the first time or level changed up. | `Name`, `Time`, `Level`, `Data` (client-safe key/value subset) |
+| `"UpdateStatus"` | Duration or level updated without a level change. | `Name`, `Time`, `Level`, `Data` |
+| `"RemoveStatus"` | Effect expired naturally or was cleared. | `Name`, `Level` |
+
+Client-side systems (HUD, visual feedback) listen on this event and react per-effect name.
+
+---
+
+## Module Interface
+
+Every effect `ModuleScript` must export a table with at least `Kind` and `Duration`. Additional optional fields and callbacks:
+
+| Field / Callback | Type | Description |
+|---|---|---|
+| `Kind` | `"Positive" \| "Negative"` | Used by `GetKind` / `IsNegative` / `IsPositive`. |
+| `Duration` | `number` | Default duration if `data.Time` is not provided (the system still requires `data.Time`). |
+| `MaxLevel` | `number` | Level cap; defaults to `99`. |
+| `Stackable` | `boolean` | If `true`, levels accumulate on re-application. |
+| `TimeStackable` | `boolean` | If `false`, duration is replaced rather than added. |
+| `Levels` | `table` | Numeric array; `Levels[level]` is passed as `levelValue` to `Apply`. |
+| `CanApply(character, data)` | `function` | Optional guard; returning `false` blocks application entirely. |
+| `Apply(character, levelValue, status)` | `function` | Called on server and/or client when the effect starts or changes level. |
+| `Clear(character, status)` | `function` | Called when the effect is removed. |
+| `Tick(character, dt, status)` | `function` | Called every `Heartbeat` while the effect is active (server-only is common). |
+
+---
+
+## Built-in Status Effects
+
+### Negative Effects
+
+<Accordion title="Bleed">
+
+**Kind:** Negative | **Default Duration:** 10 s | **MaxLevel:** 5 | **Stackable:** Yes
+
+Deals damage over time, stopping when the target's health reaches **10 HP**.
+
+| Level | Tick Interval | Damage per tick |
+|---|---|---|
+| 1 | 1.000 s | 2 |
+| 2 | 0.900 s | 2 |
+| 3 | 0.850 s | 3 |
+| 4 | 0.700 s | 3.25 |
+| 5 | 0.625 s | 4 |
+
+- Levels stack on re-application (up to 5).
+- Damage is capped so it never reduces health below 10.
+- `DamageType = "Bleed"` is forwarded to `Util:ApplyDamage`.
+
+</Accordion>
+
+<Accordion title="Blindness">
+
+**Kind:** Negative | **Default Duration:** 10 s | **MaxLevel:** 3 | **Client-side only**
+
+Adds a `BlurEffect` named `BlindnessBlur` to `game.Lighting` that tweens to a target size over 1 second. On removal, the blur tweens back to 0 and is destroyed.
+
+| Level | Blur size |
+|---|---|
+| 1 | ~18.75 |
+| 2 | ~37.5 |
+| 3 | ~56.25 |
+
+> `targetSize = 15 * level * 1.25`
+
+Optional `data` fields:
+- `data.Flash = true` — sets `ExposureCompensation` to `15` then tweens it back over the duration.
+- `data.Instant = true` — skips the tween and sets the blur size immediately.
+
+</Accordion>
+
+<Accordion title="Burning">
+
+**Kind:** Negative | **Default Duration:** 10 s | **MaxLevel:** 3 | **TimeStackable:** No
+
+Deals continuous fire damage at a fixed 0.5-second tick rate. Sets `character:SetAttribute("Burning", true)` on apply; clears it on removal.
+
+| Level | Tick Interval | Damage per tick |
+|---|---|---|
+| 1 | 0.5 s | 1 |
+| 2 | 0.5 s | 2 |
+| 3 | 0.5 s | 3 |
+
+`DamageType = "Burning"` is forwarded to `Util:ApplyDamage`.
+
+</Accordion>
+
+<Accordion title="HearingLoss">
+
+**Kind:** Negative | **Default Duration:** 10 s | **MaxLevel:** 3 | **TimeStackable:** No | **Client-side only**
+
+Applies an `EqualizerSoundEffect` named `StatusHearingLoss` to each of three `SoundGroup`s: `Chases`, `SoundTrack`, `Voicelines`. Tweens the EQ gains over 0.18 s using `Quad/Out`.
+
+| Level | HighGain | MidGain | LowGain |
+|---|---|---|---|
+| 1 | -18 dB | -8 dB | +2 dB |
+| 2 | -28 dB | -14 dB | +1 dB |
+| 3 | -40 dB | -20 dB | 0 dB |
+
+On removal, the gains tween back to 0 and the effect instance is destroyed.
+
+</Accordion>
+
+<Accordion title="Poisoned">
+
+**Kind:** Negative | **Default Duration:** 10 s | **MaxLevel:** 1 | **TimeStackable:** No
+
+Marks the target as poisoned via `character:SetAttribute("Poisoned", true)` and attaches VFX particles from a `poisonvfx` child module to each tracked body part. On removal, the attribute and all VFX tagged with `PoisonedVFX` are destroyed.
+
+This effect does **not** deal damage directly — it serves as a marker for ability scripts to read via `character:GetAttribute("Poisoned")`.
+
+</Accordion>
+
+<Accordion title="Slowness">
+
+**Kind:** Negative | **Default Duration:** 10 s | **MaxLevel:** 4 | **TimeStackable:** No
+
+Sets `character:SetAttribute("StatusSlownessMultiplier", levelValue)`. Walk-speed systems read this attribute to scale movement speed.
+
+| Level | Speed multiplier |
+|---|---|
+| 1 | 0.90 |
+| 2 | 0.70 |
+| 3 | 0.50 |
+| 4 | 0.40 |
+
+</Accordion>
+
+<Accordion title="Stunned">
+
+**Kind:** Negative | **Default Duration:** 6 s | **MaxLevel:** 1 | **TimeStackable:** No
+
+Fully immobilises the target. Stun instances stack via an internal `_StunnedActiveCount` attribute — the movement lock persists until the count reaches zero.
+
+**Server behaviour:**
+- Sets `WalkSpeed = 0`, `JumpPower = 0`, `JumpHeight = 0`, `AutoRotate = false`.
+- Zeros `AssemblyLinearVelocity` / `AssemblyAngularVelocity` on the `HumanoidRootPart`.
+- Disables `DirectionalMovement` via the `Toggle` attribute.
+- Locks abilities via `ParagonAbilities:LockAbilities` or `actor.AbilitiesDisabled = true`.
+
+**Client behaviour:**
+- Creates a `SpeedMultiplier` named `StunMultiplier` with value `0`.
+- For killers: applies a `BlurEffect` named `killer_stun_blur` (size 22, tween duration 0.2 s).
+- For actors with stun animations: plays the `StunStart` → `StunLoop` animation sequence.
+
+**On clear:**
+- Movement is restored (`restoreCharacterMovement`).
+- For killers: a `StunForceField` shield and `StunIFrames = true` attribute are applied for `stun_protection_base_duration + sentinelCount` seconds, preventing immediate re-stun.
+
+**Guard (`CanApply`):** Returns `false` if `Stunned`, `StunProtection`, or `StunIFrames` is already set on the character.
+
+</Accordion>
+
+<Accordion title="Suppressed">
+
+**Kind:** Negative | **Default Duration:** 10 s | **MaxLevel:** 1 | **Stackable:** No | **TimeStackable:** No
+
+Sets `character:SetAttribute("AbilitySuppressed", true)`. Ability managers read this attribute to prevent ability activation.
+
+</Accordion>
+
+<Accordion title="Weaken">
+
+**Kind:** Negative | **Default Duration:** 10 s | **MaxLevel:** 2 | **TimeStackable:** No
+
+Sets `character:SetAttribute("StatusWeakenMultiplier", levelValue)`. Damage calculation reads this attribute to scale outgoing damage down.
+
+| Level | Outgoing damage multiplier |
+|---|---|
+| 1 | 0.85 |
+| 2 | 0.70 |
+
+</Accordion>
+
+---
+
+### Positive Effects
+
+<Accordion title="Invisibility">
+
+**Kind:** Positive | **Default Duration:** 10 s | **MaxLevel:** 5 | **TimeStackable:** No | **Server-side**
+
+Iterates every `BasePart`, `Decal`, and `ParticleEmitter` descendant of the character and sets them to the level transparency. Stores originals for perfect restoration on clear. A `DescendantAdded` connection ensures parts added while invisible (e.g. equipped tools) are also made transparent.
+
+| Level | Transparency |
+|---|---|
+| 1 | 0.25 |
+| 2 | 0.50 |
+| 3 | 0.75 |
+| 4 | 0.915 |
+| 5 | 0.99 |
+
+Sets `character:SetAttribute("StatusInvisible", true)` while active. Parts already at full transparency (`= 1`) stay at 1.
+
+</Accordion>
+
+<Accordion title="Resistance">
+
+**Kind:** Positive | **Default Duration:** 10 s | **MaxLevel:** 10 | **TimeStackable:** No
+
+Sets `character:SetAttribute("StatusResistanceMultiplier", 1 - (level * 0.2))`. Damage calculation reads this attribute to reduce incoming damage. At level 5 this equals a 100 % damage reduction (capped to `0` multiplier).
+
+| Level | Reduction | Remaining damage |
+|---|---|---|
+| 1 | 20 % | 80 % |
+| 2 | 40 % | 60 % |
+| 3 | 60 % | 40 % |
+| 4 | 80 % | 20 % |
+| 5+ | 100 % | 0 % |
+
+</Accordion>
+
+<Accordion title="Speed">
+
+**Kind:** Positive | **Default Duration:** 10 s | **MaxLevel:** 3 | **TimeStackable:** No
+
+Sets `character:SetAttribute("StatusSpeedMultiplier", levelValue)`. Walk-speed systems read this attribute to scale movement speed up.
+
+| Level | Speed multiplier |
+|---|---|
+| 1 | 1.13 |
+| 2 | 1.20 |
+| 3 | 1.28 |
+
+</Accordion>
+
+<Accordion title="Strength">
+
+**Kind:** Positive | **Default Duration:** 10 s | **MaxLevel:** 3 | **TimeStackable:** No
+
+Sets `character:SetAttribute("StatusStrengthMultiplier", levelValue)`. Damage calculation reads this attribute to scale outgoing damage up.
+
+| Level | Outgoing damage multiplier |
+|---|---|
+| 1 | 1.15 |
+| 2 | 1.30 |
+| 3 | 1.50 |
+
+</Accordion>
+
+<Accordion title="Undetectable">
+
+**Kind:** Positive | **Default Duration:** 10 s | **MaxLevel:** 5 | **TimeStackable:** No
+
+Sets `character:SetAttribute("StatusFootstepVolumeMultiplier", levelValue)`. The footstep audio system reads this to reduce footstep volume.
+
+| Level | Volume multiplier |
+|---|---|
+| 1 | 0.85 |
+| 2 | 0.65 |
+| 3 | 0.45 |
+| 4 | 0.25 |
+| 5 | 0.08 |
+
+</Accordion>
+
+---
+
+### Killer-Specific Effects
+
+<Accordion title="KillerSpecific/Corrupted">
+
+**Kind:** Negative | **Default Duration:** 10 s | **MaxLevel:** 6 | **TimeStackable:** No | **Server-side tick**
+
+Deals nonlethal damage over time — health is never reduced below **1 HP**. Sets `character:SetAttribute("Corrupted", true)` and `character:SetAttribute("CorruptedStacks", status.Level)` on apply.
+
+| Level | Tick Interval | Damage per tick |
+|---|---|---|
+| 1 | 0.50 s | 0.75 |
+| 2 | 0.45 s | 1.125 |
+| 3 | 0.40 s | 1.60 |
+| 4 | 0.35 s | 1.925 |
+| 5 | 0.30 s | 2.25 |
+| 6 | 0.25 s | 2.50 |
+
+`DamageType = "Corrupted"` is forwarded to `Util:ApplyDamage`. The nonlethal floor is 1 HP (versus 10 HP for `Bleed`).
+
+</Accordion>
+
+---
+
+## Usage Example
+
+The following pattern is typical in an ability `Server.luau` file. Status effects should only be applied on the server.
+
+```luau
+-- ServerScriptService/.../Abilities/PoisonShot/Server.luau
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StatusEffects = require(ReplicatedStorage.Systems.Gameplay.StatusEffects)
+
+local function onHit(hitCharacter, sourcePlayer)
+    -- Apply level-1 Poisoned for 8 seconds
+    StatusEffects:GiveStatus(hitCharacter, {
+        Name   = "Poisoned",
+        Level  = 1,
+        Time   = 8,
+        Source = sourcePlayer,
+    })
+
+    -- Stack Bleed on top at level 2 for 6 seconds
+    StatusEffects:GiveStatus(hitCharacter, {
+        Name   = "Bleed",
+        Level  = 2,
+        Time   = 6,
+        Source = sourcePlayer,
+    })
+end
+```
+
+<Tip>
+Use `StatusEffects:PlayerHasStatus(target, "Stunned")` to guard ability logic — for example, to avoid re-queuing a stun while one is already running. The `CanApply` hook in `Stunned.luau` independently enforces this on the effect side, but the guard prevents unnecessary network traffic.
+</Tip>
+
+<Warning>
+`StatusEffects:GiveStatus` returns `nil` on the client (enforced by the `RunService:IsServer()` check at the top of the function). If your ability script runs on both sides, always guard with `if RunService:IsServer() then` before calling it.
+</Warning>

@@ -1,0 +1,242 @@
+---
+title: "Admin Commands Reference for Shattered Reality"
+sidebarTitle: "Admin Commands"
+description: "Complete reference for all server-side admin commands: arguments, permission requirements, execution behavior, and the underlying command infrastructure."
+---
+
+Admin commands in Shattered Reality are discrete module scripts loaded by the admin panel at runtime. Each command module exports a standard shape — an `Id`, `Title`, `RequiredRank`, `Parameters` list, and an `Execute` method — which the panel uses to build its UI and route execution. All commands listed here require **rank 13** (Moderator) or above and are permitted in both public and private servers unless noted.
+
+<Note>
+  All commands are routed through the `CommandSupport` utility module, which handles player lookup, input trimming, and blank-value detection. The `context` table passed to every `Execute` function carries `context.Player` (the admin), `context.Players` (the Players service), `context.AdminActions` (the `AdminActions` module), and `context.Payload` (a key/value map of parameter values).
+</Note>
+
+---
+
+## Command infrastructure
+
+### CommandSupport
+
+`CommandSupport` is a shared utility required by nearly every command. Its key functions are:
+
+```luau
+-- Trim whitespace; returns "" for non-strings
+support.trim(text: string): string
+
+-- Returns true when value is blank or the literal string "..."
+support.isBlank(value: any): boolean
+
+-- Parses "on"/"off" string to boolean; returns nil for anything else
+support.parseToggle(value: string): boolean?
+
+-- Looks up a player from the server Players list by the displayed name in the panel
+support.getSelectedPlayer(context, rawValue): (Player?, string?)
+
+-- Resolves a user by name/displayName/partial match or by GetUserIdFromNameAsync
+-- Returns a user record: { player, userId, username, displayName, inGame }
+support.findUser(context, rawValue): (user?, err?, kind?)
+
+-- Like findUser but errors if the resolved user is not currently in-server
+support.requirePlayerInServer(context, rawValue): (user?, err?, kind?)
+```
+
+### DefaultToggle
+
+`DefaultToggle` is a sentinel module (`Id = "default_toggle"`) used as a placeholder. Its `Executable` field is `false` and its `Execute` always returns a failure — it is never meant to be executed directly.
+
+### AdminActions
+
+`AdminActions` is a singleton initialised once on server start. It maintains an in-memory `localBans` table keyed by `UserId` and kicks any locally banned player immediately on `PlayerAdded`.
+
+```luau
+AdminActions:AddLocalBan(userId: number, reason: string)
+AdminActions:RemoveLocalBan(userId: number)
+AdminActions:Kick(players: {Player}, reason: string)
+```
+
+---
+
+## All commands
+
+All commands require **Rank 13** (Moderator). There is no separate elevated tier — all commands share the same rank gate.
+
+| Command | Id | Parameters | Description |
+|---|---|---|---|
+| **BanPlayer** | `ban_player` | Target player or username, ban reason, evidence links | Permanent universe ban via `Players:BanAsync`. Falls back to local server ban if the API fails. |
+| **UnbanPlayer** | `unban_player` | Username, scope (`Universe` / `Current Place`) | Calls `Players:UnbanAsync` and removes the local ban entry. |
+| **KickPlayer** | `kick_player` | Target player, kick reason | Kicks the selected player with the given reason (defaults to `"Kicked by admin"`). |
+| **KillPlayer** | `kill_player` | Target player | Calls `character:BreakJoints()` to instantly kill the player in-round. |
+| **RagdollPlayer** | `ragdoll_player` | Target player, state (`On` / `Off`) | Calls `Ragdoll:Start` or `Ragdoll:Stop` on the player's character. |
+| **SetPlayerRole** | `set_player_role` | Target player, role (`Survivor`/`Killer`), character name | Removes any existing actor and creates a new one via `ActorHandler:CreateActor`. The character list is populated from the `CharacterCatalog`. |
+| **SetPlayerMalice** | `set_player_malice` | Target player, amount (integer ≥ 0) | Sets `profile.Data.Bloodlust` and updates the `Bloodlust` leaderstats value, then saves the profile. |
+| **SetEquippedCharacter** | `set_equipped_character` | Target player, role, character name | Updates `profile.Data.EquippedKiller` or `EquippedSurvivor`, grants ownership in `CharacterAccessOverrides` and the purchased list, and sets a player attribute for the next round. |
+| **SetEquippedSkin** | `set_equipped_skin` | Target player, skin name | Resolves skin via `CharacterCatalog.ResolveSkinName` against the player's active actor or equipped character. Saves to `profile.Data.SelectedSkins` and hot-swaps the actor if the player is currently spawned. |
+| **GivePlayerMoney** | `give_player_money` | Target player, amount (integer > 0) | Adds the amount to `profile.Data.Fragments`, updates the `Fragments` leaderstats value, and saves the profile. |
+| **GiveStatus** | `give_status` | Target player, status name, duration (1–60 s), level (1–10) | Calls `StatusEffects:GiveStatus(character, { Name, Time, Level })`. Status options are read dynamically from the `StatusEffects` folder in `ReplicatedStorage`. |
+| **ForceEndRound** | `force_end_round` | _(none)_ | Calls `RoundHandler:EndRound()`. Fails with a warning if no round is active or if the timer is disabled. |
+| **ForceIntermissionEnd** | `force_intermission_end` | _(none)_ | Calls `RoundHandler:EndIntermission()`. Fails if intermission is not currently running. |
+| **ForceNextKiller** | `force_next_killer` | Target player or `Random` | Sets the `ForcedNextKillerUserId` workspace attribute. Select `Random` to clear the override. |
+| **ForceNextMap** | `force_next_map` | Map name (text) | Calls `RoundUtil:ForceNextMap(query)`. Fails if no map matches the query string. |
+| **ForceNextGamemode** | `force_next_gamemode` | Gamemode (`Classic`, `Double Trouble`, `One Bounce`, `Powerhouse`, or `Random`) | Sets the `ForcedGamemode` workspace attribute via `RoundUtil:ForceNextGamemode`. Select `Random` to clear the override. |
+| **DisableTimer** | `disable_timer` | _(none)_ | Toggles the `NoTimer` workspace attribute. When enabled, the round timer stops ticking and `ForceEndRound` becomes unavailable. |
+| **DisableAbilityCooldowns** | `disable_ability_cooldowns` | Toggle (`True` / `False`) | Sets the `InfiniteCooldowns` attribute on every player and character, then calls `Paragon.Abilities:ResetAllCooldowns(actor)` for each active actor when enabling. |
+| **DisableAbilityChargeRequirement** | `disable_ability_charge_requirement` | Toggle (`True` / `False`) | Module is currently non-executable (`Executable = false`). Present in the panel as a future placeholder — executing it always returns a failure. |
+| **EnableFriendlyFire** | `enable_friendly_fire` | Toggle (`True` / `False`) | Sets or clears the `FriendlyFire` workspace attribute. |
+| **MaxKillerCap** | `max_killer_cap` | Killer cap (integer 1–10, default 10) | Sets the `MaxKillers` workspace attribute. Clamped to the range `[1, 10]`. |
+| **FindPlayer** | `find_player` | Username | Teleports the admin's character to 6 studs behind the target player's `HumanoidRootPart`. Requires both characters to be loaded. |
+| **SendAnnouncement** | `send_announcement` | Message (text) | Filters the message via `TextService:FilterStringAsync` then fires `SendNotification` to all players in the current server for 5 seconds. |
+| **SendGlobalAnnouncement** | `send_global_announcement` | Message (text) | Filters the message, fires `SendNotification` locally, then publishes the payload to `ShatteredReality_GlobalAnnounce` via `MessagingService` for cross-server delivery. |
+
+---
+
+## Command details
+
+<AccordionGroup>
+  <Accordion title="BanPlayer" icon="ban">
+    BanPlayer resolves the target by either the in-panel player selector or a typed username (whichever is non-blank). The effective query prefers the typed username field when both are filled.
+
+    When the executor is below Moderator rank **and** the server is a private server, only a local ban is applied (`AdminActions:AddLocalBan`) — the Roblox ban API is not called. Otherwise, `Players:BanAsync` is called with `ApplyToUniverse = true` and `Duration = -1` (permanent). If the API call fails the system falls back to a local ban and returns an error result.
+
+    Evidence links are appended to the private reason string as `| Evidence: <links>` but do not appear in the player-visible kick message.
+
+    ```luau
+    -- context.Payload shape
+    {
+        target_player = "PlayerName",  -- from dynamic player list
+        username      = "...",          -- optional manual override
+        ban_reason    = "Exploiting",   -- from fixed option list
+        evidence      = "https://...",  -- freeform text
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="UnbanPlayer" icon="circle-check">
+    Resolves the user by username (via `support.findUser`) and calls `Players:UnbanAsync` with the chosen scope. The local ban entry is always cleared regardless of whether the API call succeeds.
+
+    Scope options:
+    - `Universe` — passes `ApplyToUniverse = true` (default)
+    - `Current Place` — passes `ApplyToUniverse = false`
+  </Accordion>
+
+  <Accordion title="SetPlayerRole" icon="user-tag">
+    This command is the fastest way to assign a player to a role mid-session without waiting for a new round. The flow is:
+
+    <Steps>
+      <Step title="Resolve target">
+        Looks up the selected player. If the player has no character, calls `player:LoadCharacter()` and waits for `CharacterAdded`.
+      </Step>
+      <Step title="Remove existing actor">
+        If `ActorHandler:GetActorFromPlayer(target)` returns an actor, `ActorHandler:RemoveActor(target)` is called first.
+      </Step>
+      <Step title="Warm and create actor">
+        `ActorHandler:WarmActor` pre-loads assets, then `ActorHandler:CreateActor` spawns the actor with the chosen character and skin (falling back to equipped/default if the character field is left blank).
+      </Step>
+      <Step title="Reattach character">
+        Clears ragdoll/platform-stand state on the humanoid, clears the `CanTurn` attribute, and re-parents the character into `workspace.Players.Killers` or `workspace.Players.Survivors`.
+      </Step>
+    </Steps>
+
+    Character options in the panel are populated at load time from `CharacterCatalog.ListNames("Killer")` and `CharacterCatalog.ListNames("Survivor")` and depend on the `role` parameter via `DependsOn`.
+  </Accordion>
+
+  <Accordion title="GivePlayerMoney" icon="coins">
+    Adds fragments to the player's persistent profile. The player must currently be in the server (`requirePlayerInServer`). Profile data is fetched via `DataHandler:GetData` with a 5-second fallback wait. The new total is floored to an integer and cannot go below 0. The `Fragments` leaderstats `IntValue` is updated immediately if present, and `profile:Save()` is called in a `pcall`.
+  </Accordion>
+
+  <Accordion title="SetEquippedSkin" icon="palette">
+    Skin resolution searches in priority order:
+    1. The player's currently active actor (if in-round).
+    2. The player's equipped killer/survivor character from profile data.
+    3. Any character across both roles that owns a matching skin (fails with an ambiguity error if more than one match exists).
+
+    Skin names are resolved via `CharacterCatalog.ResolveSkinName` which handles case-insensitive partial matching. If the target is currently in-round as the matched actor, `ActorHandler:CreateActor` is called immediately to hot-swap the appearance without respawning.
+  </Accordion>
+
+  <Accordion title="ForceNextGamemode" icon="gamepad">
+    Available gamemodes selectable from the panel:
+
+    | Label | Value |
+    |---|---|
+    | Random | `off` (clears override) |
+    | Classic | `Classic` |
+    | Double Trouble | `DoubleKiller` |
+    | One Bounce | `OneBounce` |
+    | Powerhouse | `Powerhouse` |
+
+    Selecting `Random` clears `workspace:GetAttribute("ForcedGamemode")`. Any other selection calls `RoundUtil:ForceNextGamemode(query)` and stores the definition name.
+  </Accordion>
+
+  <Accordion title="DisableAbilityCooldowns" icon="stopwatch">
+    When enabled (`True`):
+    - Sets `InfiniteCooldowns = true` on every player instance and their character.
+    - Calls `Paragon.Abilities:ResetAllCooldowns(actor)` on every player's active actor in a `pcall`, reporting a count of successfully reset actors in the success message.
+
+    When disabled (`False`):
+    - Clears `InfiniteCooldowns` on all players and characters.
+    - Does not restore original cooldown values — abilities will cooldown naturally from their next use.
+  </Accordion>
+
+  <Accordion title="SendAnnouncement vs SendGlobalAnnouncement" icon="bullhorn">
+    Both commands filter the message through `TextService:FilterStringAsync` and `GetNonChatStringForBroadcastAsync` before sending. An empty filter result (blocked by Roblox) stops execution and returns an error.
+
+    **SendAnnouncement** fires `SendNotification` (duration 5 s) to every player in the current server only.
+
+    **SendGlobalAnnouncement** additionally publishes to the `ShatteredReality_GlobalAnnounce` MessagingService topic. The published payload is a JSON-encoded object:
+
+    ```luau
+    {
+        text      = filtered,                -- filtered message string
+        sender    = context.Player.DisplayName,
+        timestamp = os.time(),
+        sourceJobId = game.JobId,
+    }
+    ```
+
+    Each server listening to that topic should independently fire the notification to its own players. The local server also receives it (duration 6 s) via the direct `SendNotification` call.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Writing a custom command module
+
+Every command module must conform to the following shape to be loaded by the admin panel:
+
+```luau
+local module = {}
+module.Id             = "my_command"        -- unique snake_case identifier
+module.Title          = "My Command"        -- display label; can be overridden by GetTitle()
+module.LayoutOrder    = 20                  -- panel sort order
+module.Executable     = true               -- set false to show but disallow execution
+module.ResetOnExecution = false            -- reset parameter fields after a successful run
+module.AllowedIn      = {"PrivateServers", "PublicServers"}
+module.RequiredRank   = 13                 -- minimum rank to see and execute this command
+module.Parameters     = {
+    {
+        Id           = "target_player",
+        Type         = "string",            -- "string" | "textbox" | "textboxpara" | "number" | "findplayer"
+        Title        = "Choose Player",
+        DefaultValue = "...",
+        DynamicOptions = "Players",         -- auto-populates from current server players
+        AllPlayersDisable = true,           -- hides the "All Players" option
+    },
+}
+
+function module:Execute(context)
+    -- context.Player        → the admin Player
+    -- context.Players       → Players service
+    -- context.AdminActions  → AdminActions singleton
+    -- context.Payload       → { [parameterId] = value, ... }
+    return true, "Success message.", "success"   -- or false, "Error.", "error"
+end
+
+-- Optional: dynamic title displayed in the panel header
+function module:GetTitle()
+    return "My Command Currently: " .. tostring(workspace:GetAttribute("MyAttr"))
+end
+
+return module
+```
+
+<Tip>
+  Use `support.requirePlayerInServer` (instead of `findUser`) for commands that modify live data — it returns a meaningful warning when the user exists but is not currently in the server, rather than silently operating on a missing character.
+</Tip>

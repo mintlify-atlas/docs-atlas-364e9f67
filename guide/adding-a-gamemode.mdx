@@ -1,0 +1,372 @@
+---
+title: "Adding a Custom Gamemode to Shattered Reality Game"
+sidebarTitle: "Adding a Gamemode"
+description: "How to create a gamemode: required Name, MinPlayers, RoundTime, and Descriptions fields, the StartRound method, optional hooks, and auto-discovery."
+---
+
+Gamemodes in Shattered Reality are single `ModuleScript` files inside `ServerScriptService/Modules/Handlers/RoundHandler/Gamemodes/`. The round system discovers every `ModuleScript` in that folder automatically — no other file needs to change. This guide covers every required and optional field, explains all four hook methods, and shows a complete minimal example you can copy.
+
+<Steps>
+
+### Create the Gamemode ModuleScript
+
+Create a new `ModuleScript` at:
+
+```text
+ServerScriptService/Modules/Handlers/RoundHandler/Gamemodes/YourGamemode.luau
+```
+
+The file name is used as a fallback for `Mode.Name` if that field is absent, but it is best practice to always set `Mode.Name` explicitly.
+
+### Populate Required Fields
+
+Every gamemode module must return a table (`Mode`) with the following fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `Mode.Name` | `string` | Internal identifier used by `RoundUtil/Gamemodes.luau` for lookup and the `ForcedGamemode` workspace attribute. |
+| `Mode.MinPlayers` | `number` | Minimum player count for this gamemode to be eligible for selection. |
+| `Mode.RoundTime` | `number` | Round duration in seconds. Overridden by a killer's own `RoundTimer` config if present. |
+| `Mode.Descriptions.Survivors` | `string` | One-line description shown to survivors before the round starts. |
+| `Mode.Descriptions.Killers` | `string` | One-line description shown to killers before the round starts. |
+
+```luau
+local Mode = {}
+Mode.__index = Mode
+
+Mode.Name       = "YourGamemode"
+Mode.MinPlayers = 2
+Mode.RoundTime  = 140
+Mode.Descriptions = {
+    Survivors = "Survive until time runs out, or complete the objectives to win.",
+    Killers   = "Eliminate every survivor to win.",
+}
+```
+
+### Implement StartRound (Required)
+
+`StartRound` is the only method the gamemode **must** implement. It receives the `context` object (which holds `ActorSetup`, `GamemodeModules`, `Maps`, and other round-level services) and the current `session` table. It must call `context.ActorSetup.StartRound` and return the result.
+
+```luau
+function Mode:StartRound(context, session)
+    return context.ActorSetup.StartRound(context, session, self)
+end
+```
+
+`context.ActorSetup.StartRound` handles killer/survivor selection, spawning, timer management, and win condition detection. The return value is a **runtime table** with at minimum:
+
+- `runtime.Alive` — `true` while the round is ongoing; `false` after it ends.
+- `runtime.SelectedActor` — the killer actor object (single-killer modes).
+- `runtime.SelectedKillers` — array of killer entries (multi-killer modes, e.g. `DoubleKiller`).
+- `runtime.Connections` — a table of `RBXScriptConnection`s that are disconnected automatically when the round ends.
+
+<Warning>
+  You must return the result of `context.ActorSetup.StartRound`. If you return
+  `nil` or forget to call it, the round will never start and players will be
+  stuck in the lobby.
+</Warning>
+
+### Add Optional Fields
+
+These fields are read directly from the module table by `RoundUtil/Gamemodes.luau`'s `prepareDefinition`:
+
+<Accordion title="DisplayName (string)">
+  A human-readable name shown in the round vote UI. Defaults to `Mode.Name` if
+  absent. Used by **DoubleKiller**, which has `Mode.Name = "DoubleKiller"` but
+  `Mode.DisplayName = "Double Trouble"`.
+
+  ```luau
+  Mode.DisplayName = "Double Trouble"
+  ```
+</Accordion>
+
+<Accordion title="KillerCount (number)">
+  How many killers are selected for this gamemode. Defaults to `1`. Must be a
+  positive integer. **DoubleKiller** sets this to `2`; **OneBounce** sets it
+  to `8`.
+
+  ```luau
+  Mode.KillerCount = 2
+  ```
+</Accordion>
+
+<Accordion title="SurvivorCount (number)">
+  Forces a specific survivor count. When absent the system uses all non-killer
+  players. **OneBounce** sets this to `1` for its single-survivor format.
+
+  ```luau
+  Mode.SurvivorCount = 1
+  ```
+</Accordion>
+
+<Accordion title="SurvivorDeathTimeBonus (number)">
+  Bonus seconds added to the round timer each time a survivor dies. Defaults to
+  `30` (defined in `RoundUtil/Gamemodes.luau`). **DoubleKiller** overrides this
+  to `15` to account for having two killers.
+
+  ```luau
+  Mode.SurvivorDeathTimeBonus = 15
+  ```
+</Accordion>
+
+<Accordion title="DisableBloodlust (boolean)">
+  When `true`, the Bloodlust mechanic (which accelerates the killer when
+  survivors are eliminated) is suppressed for this gamemode. Used by
+  **Powerhouse** (heavily boosted health makes Bloodlust redundant) and
+  **OneBounce** (eight killers need no extra pressure).
+
+  ```luau
+  Mode.DisableBloodlust = true
+  ```
+</Accordion>
+
+### Implement Optional Hook Methods
+
+These methods are called by the round system at specific points. Implement only the ones your gamemode needs.
+
+<Accordion title="Mode:ApplyActorModifiers(actor, player, spawnData)">
+  Called once per player immediately after they spawn. Use it to override
+  health, sprint stats, or any other `actor.Config` field for this gamemode.
+
+  `actor.ActorType` is `"Killer"` or `"Survivor"`.
+
+  **DoubleKiller** example — scales killer health down and survivor health up
+  when there are two or fewer survivors remaining:
+
+  ```luau
+  function Mode:ApplyActorModifiers(actor, player, spawnData)
+      local character = player.Character
+      local humanoid  = character and character:FindFirstChildOfClass("Humanoid")
+      if not humanoid then return end
+
+      actor.Config.SprintConfig = actor.Config.SprintConfig or {}
+      if actor.ActorType == "Survivor" then
+          local survivorCount = tonumber(spawnData and spawnData.RoundSurvivorCount) or 0
+          local targetHealth  = survivorCount > 0 and survivorCount <= 2 and 200 or 100
+          actor.Config.MaxHealth = targetHealth
+          humanoid.MaxHealth     = targetHealth
+          humanoid.Health        = targetHealth
+          actor.Config.SprintConfig.MaxStamina = 150
+          actor.Config.SprintConfig.Stamina    = 150
+      elseif actor.ActorType == "Killer" then
+          humanoid.MaxHealth *= 0.7
+          humanoid.Health    *= 0.7
+          actor.Config.SprintConfig.MaxStamina =
+              (actor.Config.SprintConfig.MaxStamina
+               or actor.Config.SprintConfig.Stamina
+               or 100) * 0.8
+          actor.Config.SprintConfig.Stamina = actor.Config.SprintConfig.MaxStamina
+      end
+  end
+  ```
+
+  **Powerhouse** example — every actor gets 50 000 HP and 300 stamina:
+
+  ```luau
+  function Mode:ApplyActorModifiers(actor, player)
+      local character = player.Character
+      local humanoid  = character and character:FindFirstChildOfClass("Humanoid")
+      if not humanoid then return end
+
+      actor.Config.MaxHealth = 50000
+      humanoid.MaxHealth     = 50000
+      humanoid.Health        = 50000
+
+      actor.Config.SprintConfig = actor.Config.SprintConfig or {}
+      actor.Config.SprintConfig.Stamina    = 300
+      actor.Config.SprintConfig.MaxStamina = 300
+  end
+  ```
+</Accordion>
+
+<Accordion title="Mode:AdjustRoundReward(context, rewardDefinition, participant)">
+  Called before a reward is granted to a participant at round end. Return a
+  modified copy of `rewardDefinition` to scale Cash or CharacterPoints, or
+  return `rewardDefinition` unchanged. Returning `nil` falls back to the
+  original.
+
+  **DoubleKiller** halves killer rewards because two killers share the same
+  survivor pool:
+
+  ```luau
+  function Mode:AdjustRoundReward(_context, rewardDefinition, participant)
+      if participant and participant.actorType == "Killer" then
+          local scaled = table.clone(rewardDefinition)
+          if scaled.Cash ~= nil then
+              scaled.Cash = math.max(0, math.floor((tonumber(scaled.Cash) or 0) * 0.5))
+          end
+          if scaled.CharacterPoints ~= nil then
+              scaled.CharacterPoints = math.max(
+                  0,
+                  math.floor((tonumber(scaled.CharacterPoints) or 0) * 0.5)
+              )
+          end
+          return scaled
+      end
+      return rewardDefinition
+  end
+  ```
+</Accordion>
+
+<Accordion title="Mode:BuildKillerSelectionResult(selectedActors, gamemodeDefinition)">
+  Override how the killer selection result is packaged for multi-killer modes.
+  The default implementation returns the first entry in `selectedActors`. If
+  your gamemode has `KillerCount > 1`, override this to return the full array.
+
+  **DoubleKiller** returns all selected actors:
+
+  ```luau
+  function Mode:BuildKillerSelectionResult(selectedActors, gamemodeDefinition)
+      local selected = selectedActors[1]
+      if not selected then return nil end
+      return selected.Actor, selected.Player, selected.Name,
+             gamemodeDefinition.Name, selectedActors
+  end
+  ```
+</Accordion>
+
+### Complete Minimal Gamemode
+
+Here is the smallest valid gamemode — functionally identical to **Classic**, which is the default:
+
+```luau
+-- ServerScriptService/Modules/Handlers/RoundHandler/Gamemodes/YourGamemode.luau
+
+local Mode = {}
+Mode.__index = Mode
+
+Mode.Name       = "YourGamemode"
+Mode.MinPlayers = 2
+Mode.RoundTime  = 140
+Mode.Descriptions = {
+    Survivors = "Survive until time runs out, or complete the objectives to win.",
+    Killers   = "Eliminate every survivor to win.",
+}
+
+function Mode:StartRound(context, session)
+    return context.ActorSetup.StartRound(context, session, self)
+end
+
+return Mode
+```
+
+And a more complete example showing all optional features:
+
+```luau
+-- ServerScriptService/Modules/Handlers/RoundHandler/Gamemodes/YourGamemode.luau
+
+local Mode = {}
+Mode.__index = Mode
+
+Mode.Name                  = "YourGamemode"
+Mode.DisplayName           = "Your Gamemode Display Name"
+Mode.MinPlayers            = 4
+Mode.KillerCount           = 1
+Mode.RoundTime             = 180
+Mode.SurvivorDeathTimeBonus = 20
+Mode.DisableBloodlust      = false
+Mode.Descriptions = {
+    Survivors = "Survive the killer under modified rules.",
+    Killers   = "Hunt down every survivor under modified rules.",
+}
+
+function Mode:StartRound(context, session)
+    local runtime = context.ActorSetup.StartRound(context, session, self)
+
+    -- Optional: run custom logic while the round is alive
+    task.spawn(function()
+        while runtime.Alive do
+            -- e.g. tick-based events
+            task.wait(5)
+        end
+    end)
+
+    return runtime
+end
+
+function Mode:ApplyActorModifiers(actor, player, spawnData)
+    local character = player.Character
+    local humanoid  = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    actor.Config.SprintConfig = actor.Config.SprintConfig or {}
+
+    if actor.ActorType == "Survivor" then
+        -- Survivors get a small health boost
+        actor.Config.MaxHealth = 125
+        humanoid.MaxHealth     = 125
+        humanoid.Health        = 125
+    elseif actor.ActorType == "Killer" then
+        -- Killer moves slightly slower
+        actor.Config.SprintConfig.SprintSpeed =
+            (actor.Config.SprintConfig.SprintSpeed or 30) * 0.85
+    end
+end
+
+function Mode:AdjustRoundReward(_context, rewardDefinition, participant)
+    -- Give everyone a 10 % bonus
+    if typeof(rewardDefinition) ~= "table" then return rewardDefinition end
+    local scaled = table.clone(rewardDefinition)
+    if scaled.Cash ~= nil then
+        scaled.Cash = math.floor((tonumber(scaled.Cash) or 0) * 1.1)
+    end
+    return scaled
+end
+
+return Mode
+```
+
+### Auto-Discovery — No Manual Registration Required
+
+`RoundUtil/Gamemodes.luau`'s `GetDefinitions` iterates every `ModuleScript` inside `context.GamemodeModules` (which points to the `Gamemodes/` folder) and calls `prepareDefinition` on each one:
+
+```luau
+-- RoundUtil/Gamemodes.luau (excerpt — read-only reference)
+
+function Module.GetDefinitions(context)
+    context.loadedGamemodes     = {}
+    context.loadedGamemodesByName = {}
+
+    for _, child in ipairs(context.GamemodeModules:GetChildren()) do
+        if child:IsA("ModuleScript") then
+            local definition = prepareDefinition(context, child)
+            table.insert(context.loadedGamemodes, definition)
+            context.loadedGamemodesByName[definition.Name] = definition
+            context.loadedGamemodesByName[child.Name]      = definition
+        end
+    end
+
+    table.sort(context.loadedGamemodes, function(a, b)
+        return a.Name < b.Name
+    end)
+    return context.loadedGamemodes
+end
+```
+
+Your gamemode is available via `RoundUtil.Gamemodes.GetByName(context, "YourGamemode")` immediately after the folder is scanned.
+
+<Note>
+  Gamemodes are sorted alphabetically by `Name` before the eligible pool is
+  built. This does not affect selection probability — only the order in
+  internal iteration.
+</Note>
+
+<Note>
+  A gamemode is skipped from special-round selection if `Mode.Enabled == false`
+  or `Mode.Exclusive == true`. Set `Exclusive = true` for gamemodes that should
+  only be force-started via the `ForcedGamemode` workspace attribute (e.g.
+  private-server-only modes).
+</Note>
+
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="Adding a Killer" icon="skull" href="/guide/adding-a-killer">
+    Killer Config fields like SprintConfig and MaxHealth are the same fields
+    ApplyActorModifiers overrides at round start.
+  </Card>
+  <Card title="Adding a Map" icon="map" href="/guide/adding-a-map">
+    Maps and gamemodes are independently selected — any map can run with any
+    gamemode unless you add explicit filtering logic.
+  </Card>
+</CardGroup>

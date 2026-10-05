@@ -1,0 +1,275 @@
+---
+title: "Gamemodes — Shattered Reality Round Variants"
+sidebarTitle: "Gamemodes"
+description: "Reference for all four Shattered Reality gamemodes: Classic, Double Trouble, Powerhouse, and One Bounce — including stat modifiers and selection logic."
+---
+
+Every round in Shattered Reality is governed by a gamemode definition module stored under `ServerScriptService/Modules/Handlers/RoundHandler/Gamemodes/`. Each module exports a plain Luau table (`Mode`) that is wrapped by `RoundUtil/Gamemodes.luau` at startup, which injects normalised helper functions (`StartRound`, `FinishRound`, `ApplyActorModifiers`, `AdjustRoundReward`, `GetRoundTime`, `GetSurvivorDeathTimeBonus`, `IsEligible`) before the definition is stored in `context.loadedGamemodes`. The default gamemode is **Classic**; special modes are attempted every `SpecialRoundInterval` (currently `3`) rounds, chosen at random from all eligible definitions.
+
+---
+
+## Gamemode Interface Reference
+
+The following fields are read directly from each mode's module table and/or injected by `Gamemodes.prepareDefinition`.
+
+| Field | Type | Description |
+|---|---|---|
+| `Name` | `string` | Internal identifier — must match the `ModuleScript` name. |
+| `DisplayName` | `string` | Human-readable name shown in logs and HUD; falls back to `Name`. |
+| `MinPlayers` | `number` | Minimum eligible players required for the mode to be selected. |
+| `RoundTime` | `number` | Round duration in seconds (used when no killer `RoundTimer` overrides it). |
+| `KillerCount` | `number` | Number of killers spawned; defaults to `1` if omitted. |
+| `SurvivorCount` | `number \| nil` | Hard cap on survivors spawned; `nil` means no cap. |
+| `DisableBloodlust` | `boolean \| nil` | When `true`, killer selection is random instead of bloodlust-weighted. |
+| `UseSharedKiller` | `boolean \| nil` | When `true`, all selected killers share a single actor entry. |
+| `StartRound` | `function` | Called once per round — returns a `runtime` table. |
+| `ApplyActorModifiers` | `function \| nil` | Called for every spawned actor to apply stat overrides. |
+| `AdjustRoundReward` | `function \| nil` | Called during reward distribution to scale or override payouts. |
+
+---
+
+## Gamemodes
+
+<Tabs>
+  <Tab title="Classic">
+
+Classic is the default gamemode and runs whenever the special-round counter has not yet reached `SpecialRoundInterval` or no special mode can be selected for the current player count.
+
+**Source:** `Gamemodes/Classic.luau`
+
+<CardGroup cols={2}>
+  <Card title="Minimum Players" icon="users">
+    **2** players required to start.
+  </Card>
+  <Card title="Round Time" icon="clock">
+    **140 seconds** base duration.
+  </Card>
+</CardGroup>
+
+### Role Descriptions
+
+| Role | Description |
+|---|---|
+| Survivors | Survive until time runs out, or complete the objectives to win. |
+| Killer | Eliminate every survivor to win. |
+
+### Behaviour
+
+Classic applies no stat modifications — all actors spawn with their default `MaxHealth`, damage, and stamina values as configured in the killer/survivor `Config`. There is no `ApplyActorModifiers` override, no `AdjustRoundReward` override, and bloodlust-weighted killer selection is active.
+
+```luau
+-- Gamemodes/Classic.luau
+local Mode = {}
+Mode.__index = Mode
+
+Mode.Name = "Classic"
+Mode.MinPlayers = 2
+Mode.RoundTime = 140
+Mode.Descriptions = {
+    Survivors = "Survive until time runs out, or complete the objectives to win.",
+    Killers = "Eliminate every survivor to win.",
+}
+
+function Mode:StartRound(context, session)
+    return context.ActorSetup.StartRound(context, session, self)
+end
+
+return Mode
+```
+
+  </Tab>
+  <Tab title="Double Trouble">
+
+Double Trouble (`DoubleKiller`) spawns two killers simultaneously and applies asymmetric scaling to balance the increased threat — survivors gain health depending on their team size, while each killer receives reduced health and damage to compensate.
+
+**Source:** `Gamemodes/DoubleKiller.luau`
+
+<CardGroup cols={2}>
+  <Card title="Minimum Players" icon="users">
+    **4** players required to start.
+  </Card>
+  <Card title="Round Time" icon="clock">
+    **150 seconds** base duration.
+  </Card>
+  <Card title="Killer Count" icon="skull">
+    **2** killers spawned per round.
+  </Card>
+  <Card title="Survivor Death Bonus" icon="heart">
+    **+15 seconds** added to the round when a survivor dies.
+  </Card>
+</CardGroup>
+
+### Role Descriptions
+
+| Role | Description |
+|---|---|
+| Survivors | Survive the two killers until time runs out, or complete the objectives to win. |
+| Killers | Eliminate every survivor with the other killer on your team. |
+
+### Stat Modifiers (`ApplyActorModifiers`)
+
+<Tabs>
+  <Tab title="Survivor Modifiers">
+
+Survivor health scales with round size. When only 1–2 survivors are in the roster, each spawns with **200 HP**; with 3 or more survivors the cap drops to **100 HP**. Stamina and sprint gain are also increased.
+
+| Stat | Value |
+|---|---|
+| `MaxHealth` | `200` (≤ 2 survivors) or `100` (3+ survivors) |
+| `Stamina` / `MaxStamina` | `150` |
+| `SprintGain` | Base sprint gain × `1.2` |
+| `CooldownMultiplier` attribute | `0.9` (set via `DoubleTroubleSurvivorCooldownMultiplier`) |
+
+  </Tab>
+  <Tab title="Killer Modifiers">
+
+Both killers receive reduced survivability and damage output to offset the 2v1+ advantage.
+
+| Stat | Multiplier |
+|---|---|
+| `MaxHealth` / `Health` | × `0.7` of default |
+| `Damage` | × `0.75` of default |
+| `MaxStamina` / `Stamina` | × `0.8` of default |
+
+  </Tab>
+</Tabs>
+
+### Survivor Passive Heal
+
+While the round is active and the gamemode is `DoubleKiller`, a background coroutine calls `Util:Heal(humanoid, 0.95)` on every survivor every second — a 5 % heal tick intended to offset the pressure of two killers.
+
+### Reward Adjustment (`AdjustRoundReward`)
+
+Killers in Double Trouble receive **50 %** of the normal cash and character-point reward, regardless of outcome. Survivor rewards are unaffected.
+
+```luau
+function Mode:AdjustRoundReward(_context, rewardDefinition, participant)
+    return participant and participant.actorType == "Killer"
+        and scaleReward(rewardDefinition, 0.5)
+        or rewardDefinition
+end
+```
+
+  </Tab>
+  <Tab title="Powerhouse">
+
+Powerhouse inflates every participant's health to an extreme value and disables bloodlust-based killer selection. The extended round time and massive health pools turn fights into prolonged battles of attrition.
+
+**Source:** `Gamemodes/Powerhouse.luau`
+
+<CardGroup cols={2}>
+  <Card title="Minimum Players" icon="users">
+    **2** players required to start.
+  </Card>
+  <Card title="Round Time" icon="clock">
+    **380 seconds** base duration.
+  </Card>
+</CardGroup>
+
+### Role Descriptions
+
+| Role | Description |
+|---|---|
+| Survivors | Everyone is heavily boosted. Outlast the killer or finish the objectives. |
+| Killer | Everyone is heavily boosted. Hunt down the survivors before time runs out. |
+
+### Stat Modifiers (`ApplyActorModifiers`)
+
+The same modifiers apply to **both killers and survivors** with no distinction.
+
+| Stat | Value |
+|---|---|
+| `MaxHealth` / `Health` | `50 000` |
+| `Stamina` / `MaxStamina` | `300` |
+
+<Note>
+`DisableBloodlust = true` is set on this mode, meaning the killer is chosen randomly rather than by bloodlust rank.
+</Note>
+
+```luau
+function Mode:ApplyActorModifiers(actor, player)
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    actor.Config.MaxHealth = 50000
+    humanoid.MaxHealth = 50000
+    humanoid.Health = 50000
+
+    actor.Config.SprintConfig = actor.Config.SprintConfig or {}
+    actor.Config.SprintConfig.Stamina = 300
+    actor.Config.SprintConfig.MaxStamina = 300
+end
+```
+
+  </Tab>
+  <Tab title="One Bounce">
+
+One Bounce is an asymmetric challenge mode: a single survivor faces eight killers simultaneously. The lone survivor is given massively boosted health and stamina; killers receive a damage multiplier and reduced stamina to keep the match dynamic.
+
+**Source:** `Gamemodes/OneBounce.luau`
+
+<CardGroup cols={2}>
+  <Card title="Minimum Players" icon="users">
+    **9** players required to start.
+  </Card>
+  <Card title="Round Time" icon="clock">
+    **180 seconds** base duration.
+  </Card>
+  <Card title="Killer Count" icon="skull">
+    **8** killers spawned per round.
+  </Card>
+  <Card title="Survivor Count" icon="person">
+    **1** survivor selected from the eligible roster.
+  </Card>
+</CardGroup>
+
+### Role Descriptions
+
+| Role | Description |
+|---|---|
+| Survivor | Stand alone against eight killers with boosted health and stamina. |
+| Killers | Hunt down the lone survivor with the other killers on your team. |
+
+### Stat Modifiers (`ApplyActorModifiers`)
+
+<Tabs>
+  <Tab title="Survivor Modifiers">
+
+| Stat | Value |
+|---|---|
+| `MaxHealth` / `Health` | `1 800` |
+| `Stamina` / `MaxStamina` | `200` |
+
+  </Tab>
+  <Tab title="Killer Modifiers">
+
+| Stat | Value |
+|---|---|
+| `Damage` | × `4` of default |
+| `Stamina` / `MaxStamina` | `150` |
+
+  </Tab>
+</Tabs>
+
+<Note>
+`DisableBloodlust = true` and `UseSharedKiller = true` are both set on this mode. Bloodlust rank is ignored entirely for killer selection.
+</Note>
+
+  </Tab>
+</Tabs>
+
+---
+
+## Selection Logic
+
+`Gamemodes.Select` in `RoundUtil/Gamemodes.luau` runs the following checks on every intermission expiry:
+
+1. If `workspace:GetAttribute("ForcedGamemode")` is set, that mode is used (and the attribute is cleared).
+2. If the special-round counter (`SpecialRoundCounter`) has not yet reached `SpecialRoundInterval` (`3`), the default **Classic** mode is returned.
+3. Otherwise, all non-default modes that pass `IsEligible(playerCount)` — meaning `Enabled ~= false`, `Exclusive ~= true`, and `MinPlayers` is satisfied — are collected into a pool and one is selected at random.
+4. If no special mode passes, **Classic** is used as the fallback.
+
+<Tip>
+You can force a specific gamemode for the next round (without clearing the counter) by setting `workspace:SetAttribute("ForcedGamemode", "DoubleKiller")` from a server script or a game-admin command.
+</Tip>

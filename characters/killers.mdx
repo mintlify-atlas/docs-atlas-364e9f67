@@ -1,0 +1,501 @@
+---
+title: "Killers Reference — Shattered Reality Character Docs"
+sidebarTitle: "Killers"
+description: "Full ability breakdowns, sprint stats, and chase configs for every killer in Shattered Reality: JohnDoe, c00lkidd, TheClown, Wirefly, and !Pursuer."
+---
+
+Killers are the hunting role in Shattered Reality. Every killer has 1 000 HP (except !Pursuer at 3 500), a `ChaseConfig` that drives proximity-based music layering, and an `AbilityInfo` table with at least an M1 basic attack and two or more special abilities. Sprint stamina is shared across all killers at a starting pool of 115 (350 for !Pursuer), and speed tuning varies per character to give each kit a distinct feel.
+
+<Note>
+  All numeric values on this page are sourced directly from each killer's `Config` ModuleScript in `ReplicatedStorage/Systems/Characters/Killers/`. Values shown are the base defaults before any skin override is applied.
+</Note>
+
+---
+
+## JohnDoe
+
+John Doe ("The Corrupted Pursuer") is a **Rushdown**-class killer built around closing gaps quickly with a short-cooldown basic attack and a mobility dash. He has a special emotional relationship with JaneDoe that triggers an alternate chase theme during Last Man Standing when she is the last survivor.
+
+<Accordion title="Sprint & movement">
+
+  | Field | Value |
+  |---|---|
+  | `Stamina` / `MaxStamina` | 115 |
+  | `WalkSpeed` | 9.5 |
+  | `SprintSpeed` | 30 |
+  | `SprintLoss` | 12.5 |
+  | `SprintGain` | 28 |
+
+</Accordion>
+
+<Accordion title="ChaseConfig">
+
+  | Field | Value |
+  |---|---|
+  | `Radius` | 100 studs |
+  | Layer 1 | 0 s → 10.13 s |
+  | Layer 2 | 10.13 s → 20.24 s |
+  | Layer 3 | 20.24 s → 40.45 s |
+  | Layer 4 | 40.45 s → 90 s |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  **Slash** (`AbilityM1`)
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 1.7 s |
+  | Damage | 16 |
+  | HitboxSize | `(4.5, 6, 5.2)` |
+  | Amount (HitboxAmount) | 16 |
+  | Delay (HitboxDelay) | 0.011 s |
+  | HitboxLifetime | 0.16 s |
+  | HitboxSpawnDelay | 0.4 s |
+  | HitSpeedBonusMultiplier | 1.45× |
+  | HitSpeedBonusDuration | 1.1 s |
+
+  ```lua
+  Slash = {
+      Type     = "AbilityM1",
+      Cooldown = 1.7,
+      Damage   = 16,
+      HitboxSize   = Vector3.new(4.5, 6, 5.2),
+      HitboxAmount = 16,   -- normalized → Amount
+      HitboxDelay  = 0.011, -- normalized → Delay
+      HitSpeedBonusMultiplier = 1.45,
+      HitSpeedBonusDuration   = 1.1,
+  }
+  ```
+
+  ---
+
+  **Impale** (`Ability1`)
+
+  Fires a spike projectile that travels up to 60 studs at 125 studs/s. On hit it applies bleed and a knockback burst; damage falls off by 25 % per extra target beyond the first.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 18 s |
+  | Damage | 16 |
+  | MaxTargets | 2 |
+  | DamageFalloffPerExtraHit | 0.25 |
+  | BleedFalloffPerExtraHit | 0.35 |
+  | KnockbackForce | 18 |
+  | KnockbackDuration | 0.18 s |
+  | ProjectileDistance | 60 studs |
+  | ProjectileSpeed | 125 studs/s |
+  | BleedLevel | 1 |
+  | BleedDuration | 3 s |
+
+  ---
+
+  **Pounce** (`Ability2`)
+
+  John dashes forward with a 0.36 s startup, grabs the target, and throws them after 1.25 s. A 0.82 s charge window locks movement; missing extends recovery.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 16 s |
+  | Damage | 17 |
+  | StartupDelay | 0.36 s |
+  | ChargeDuration | 0.82 s |
+  | ChargeVelocity | 80 studs/s |
+  | GrabDuration | 0.78 s |
+  | ThrowAt | 1.25 s |
+  | ThrowForce | 54 |
+  | ThrowUpwardForce | 16 |
+  | ThrowRagdollDuration | 1.4 s |
+
+</Accordion>
+
+<Accordion title="LMS emotional data (JaneDoe relation)">
+
+  When JaneDoe is the last survivor and John Doe is the killer, the Manager replaces the standard chase theme with an alternate audio track defined in `LastManStandingEmotionalData`:
+
+  ```lua
+  Relations = { "JaneDoe" },
+  LastManStandingEmotionalData = {
+      JaneDoe = {
+          ThemeID = "rbxassetid://114037366568111",
+      },
+  },
+  ```
+
+  The Manager's `bind_server_dialogue` function also fires contextual dialogue lines across intro, roam, kill, last-survivor, stun, and match-win events. A dialogue lock attribute (`JohnDialogueLockUntil`) prevents overlapping lines; roam lines fire every 38–52 seconds.
+
+</Accordion>
+
+---
+
+## c00lkidd
+
+c00lkidd ("The Digital Menace") is a **Zoner**-class killer whose kit revolves around area-denial and persistent burning effects. His basic attack has higher base damage than JohnDoe's Slash, and Ring Of Fire applies both a slow and a burn to caught survivors.
+
+<Accordion title="Sprint & movement">
+
+  | Field | Value |
+  |---|---|
+  | `Stamina` / `MaxStamina` | 115 |
+  | `WalkSpeed` | 9.5 |
+  | `SprintSpeed` | 29.8 |
+  | `SprintLoss` | 13 |
+  | `SprintGain` | 20.5 |
+
+</Accordion>
+
+<Accordion title="ChaseConfig">
+
+  | Field | Value |
+  |---|---|
+  | `Radius` | 90 studs |
+  | Layer 1 | 0 s → 12.02 s |
+  | Layer 2 | 12.02 s → 24 s |
+  | Layer 3 | 24 s → 36.01 s |
+  | Layer 4 | 36.01 s → 180 s |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  **Punch** (`AbilityM1`)
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 1.7 s |
+  | Damage | 23 |
+  | HitboxSize | `(4.75, 6, 5)` |
+  | Amount | 16 |
+  | Delay | 0.012 s |
+  | HitboxLifetime | 0.16 s |
+  | HitboxSpawnDelay | 0.4 s |
+  | HitSpeedBonusMultiplier | 1.5× |
+  | HitSpeedBonusDuration | 1.2 s |
+
+  ---
+
+  **Ring Of Fire** (`Ability1`)
+
+  Deploys a ring of fire around the target area. Survivors caught inside are slowed then set on fire for a persistent burn duration.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 30 s |
+  | SlowLevel | 2 |
+  | SlowTime | 3.5 s |
+  | BurningTime | 5 s |
+
+  ---
+
+  **Ray Of Havoc** (`Ability3`)
+
+  A channelled beam attack. Cooldown and damage values are resolved at runtime and are not declared in the static Config — the ability relies on its `Ability3` type slot and animation data.
+
+  ```lua
+  RayOfHavoc = {
+      Name = "Ray Of Havoc",
+      Type = "Ability3",
+      -- runtime-resolved parameters
+  }
+  ```
+
+</Accordion>
+
+---
+
+## TheClown
+
+The Clown ("The Chaotic Performer") is a **Strategic**-class killer with the most complex kit of the standard roster. His `SprintGain` (25.5) is lower than JohnDoe's, reflecting a slower stamina recovery that trades off against powerful crowd-control tools.
+
+<Accordion title="Sprint & movement">
+
+  | Field | Value |
+  |---|---|
+  | `Stamina` / `MaxStamina` | 115 |
+  | `WalkSpeed` | 9.5 |
+  | `SprintSpeed` | 28.5 |
+  | `SprintLoss` | 13 |
+  | `SprintGain` | 25.5 |
+
+</Accordion>
+
+<Accordion title="ChaseConfig">
+
+  | Field | Value |
+  |---|---|
+  | `Radius` | 100 studs |
+  | Layer 1 | 0 s → 8.21 s |
+  | Layer 2 | 8.34 s → 16 s |
+  | Layer 3 | 17 s → 29.33 s |
+  | Layer 4 | 34 s → 120 s |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  **Swing** (`AbilityM1`)
+
+  The Clown's highest-damage basic attack in the roster, at 26 damage per hit.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 2.15 s |
+  | Damage | 26 |
+  | HitboxSize | `(3.5, 6, 5)` |
+  | Amount | 16 |
+  | Delay | 0.012 s |
+  | AnimationBlendTime | 0.12 s |
+  | HitSpeedBonusMultiplier | 1.5× |
+  | HitSpeedBonusDuration | 1.15 s |
+
+  ---
+
+  **Improbable Outbreak** (`Ability1`)
+
+  Launches a boulder projectile. While active, small-cooldown re-activations can be chained; survivors hit are bounced back.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 6 s |
+  | SmallCooldown | 2 s |
+  | StartCooldown | 2 s |
+  | RockVelocity | 37.5 studs/s |
+  | RockDuration | 6 s |
+  | BounceBackVelocity | 50 studs/s |
+  | BounceBackDuration | 0.7 s |
+
+  ---
+
+  **Tactical Recall** (`Ability2`)
+
+  Throws a sign that can return to the killer's hand — pulling any survivor it struck on the way back. A shorter cooldown applies if a survivor was hit.
+
+  | Field | Value |
+  |---|---|
+  | DefaultCooldown | 25 s |
+  | SurvivorHitCooldown | 20 s |
+  | SignSpeed | 110 studs/s |
+  | SignLifetime | 0.62 s |
+  | KickDamage | 35 |
+  | ReelTime | 1 s |
+
+  ---
+
+  **Skewers Of Hell** (`Ability3`)
+
+  Summons a sequence of ground spikes, up to 15 at a time, each dealing 12 damage on contact.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 8 s |
+  | MaxSpikesSpawnable | 15 |
+  | SpawnTickPerSecond | 0.08 s |
+  | AfterSpawnLongevity | 1.5 s |
+  | SpikeDamage | 12 |
+  | SpikeHitboxSize | `(4, 14, 4)` |
+  | SpikeHitboxLifetime | 0.35 s |
+
+</Accordion>
+
+---
+
+## Wirefly
+
+Wirefly ("The Graceful Firefly") is classified under the generic `Killer` class. The Config includes a `MovementConfig` block that governs a unique glide mechanic — when the killer is above `GlideMinHeight` studs, vertical fall is replaced by a controlled glide.
+
+<Accordion title="Sprint & movement">
+
+  | Field | Value |
+  |---|---|
+  | `Stamina` / `MaxStamina` | 115 |
+  | `WalkSpeed` | 9.5 |
+  | `SprintSpeed` | 28.5 |
+  | `SprintLoss` | 13 |
+  | `SprintGain` | 25.5 |
+
+  **MovementConfig** (glide system):
+
+  | Field | Value |
+  |---|---|
+  | SpeedMultiplier | 1.06× |
+  | StaminaLossMultiplier | 1.25× |
+  | GlideMinHeight | 55 studs |
+  | GlideFallSpeed | 4 studs/s |
+  | GlideForwardSpeed | 10.25 studs/s |
+  | GlideLandingCarrySpeed | 3.5 studs/s |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  **M1** (`AbilityM1`)
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 1.6 s |
+  | Damage | 22 |
+  | HitboxSize | `(4.5, 5.5, 5)` |
+  | Amount | 12 |
+  | Delay | 0.012 s |
+  | Endlag | 0.70 s |
+  | HitSpeedBonusMultiplier | 1.55× |
+  | HitSpeedBonusDuration | 1.25 s |
+
+  ---
+
+  **Highspeed Assault** (`Ability1`)
+
+  Wirefly dashes at high velocity and grabs a survivor, dealing damage then launching them away.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 18 s |
+  | AssaultVelocity | 52.5 studs/s |
+  | AssaultHitboxSize | `(4.2, 6, 7)` |
+  | AssaultHitboxLifetime | 5.5 s |
+  | GrabDamage | 30 |
+  | SurvivorThrowForce | 71.5 |
+  | WeldDestroyDelay | 1.3 s |
+
+  ---
+
+  **Insightful Aroma** (`Ability2`)
+
+  A sniff ability that reveals survivors based on their remaining health. The lower their health, the longer the reveal duration (scaling from `RevealHealthStart` downward in `RevealHealthStep` increments).
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 24 s |
+  | SniffTime | 2 s |
+  | RevealTime | 2 s |
+  | RevealHealthStart | 85 HP |
+  | RevealHealthStep | 10 HP |
+  | RevealTimeStep | 0.5 s |
+  | MaxRevealTime | 7.5 s |
+
+  ---
+
+  **Infectious Siphon** (`Ability3`)
+
+  A second dash that grabs the target, applies poison, then launches them.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 20 s |
+  | GrabDamage | 25 |
+  | PoisonLevel | 1 |
+  | PoisonDuration | 3 s |
+  | SiphonVelocity | 52.5 studs/s |
+  | LaunchVelocity | 60 studs/s |
+  | LaunchDuration | 0.65 s |
+  | SiphonEndDuration | 1.75 s |
+
+</Accordion>
+
+---
+
+## !Pursuer
+
+!Pursuer ("The Relentless Hunter") is a **Chaser**-class killer with dramatically amplified health (3 500 HP) and stamina (350), intended for special/event-mode play. The `!` prefix marks it as a limited-access character — see the [Overview](/characters/overview) for how the loader handles this naming convention.
+
+<Warning>
+  !Pursuer's `MaxHealth` of 3 500 and `MaxStamina` of 350 mean standard stun and damage thresholds tuned for normal killers will not function the same way. Systems that reference `Characters.Global.StaminaTuning.LMSCaps` should account for the extended pool.
+</Warning>
+
+<Accordion title="Sprint & movement">
+
+  | Field | Value |
+  |---|---|
+  | `Stamina` / `MaxStamina` | 350 |
+  | `WalkSpeed` | 10.2 |
+  | `SprintSpeed` | 29 |
+  | `SprintLoss` | 13 |
+  | `SprintGain` | 22 |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  **M1** (`AbilityM1`)
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 1.7 s |
+  | Damage | 20 |
+  | HitboxSize | `(4.5, 5.5, 5)` |
+  | Amount | 16 |
+  | Delay | 0.011 s |
+  | HitboxSpawnDelay | 0.35 s |
+  | Endlag | 0.85 s |
+  | HitSpeedBonusMultiplier | 1.55× |
+  | HitSpeedBonusDuration | 1.25 s |
+
+  ---
+
+  **Howl** (`Ability2`)
+
+  An AoE shockwave that expands to 75 studs, slowing all hit survivors and boosting the Pursuer's own speed briefly. The Pursuer is also briefly slowed during the windup.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 20 s |
+  | Windup | 0.7 s |
+  | Endlag | 0.9 s |
+  | Damage | 20 |
+  | ShockwaveDistance | 75 studs |
+  | ShockwaveDuration | 0.55 s |
+  | MinSlownessStuds | 3 |
+  | MaxSlownessStuds | 6 |
+  | SlownessTime | 5 s |
+  | HighlightDuration | 5 s |
+  | SpeedBoostStuds | 5 |
+  | SpeedBoostTime | 0.5 s |
+
+  ---
+
+  **Cleave** (`Ability3`)
+
+  A wide horizontal slash with a long swing duration. Hitting a survivor marks them (highlighted for 5 s) and applies bleed; missing still retains a portion of the speed boost.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 22 s |
+  | Damage | 20 |
+  | SwingDuration | 1.4 s |
+  | Windup | 0.6 s |
+  | CleaveDuration | 0.3 s |
+  | SpeedBoostStuds | 5 |
+  | HitBoostRetention | 0.4 |
+  | MissBoostRetention | 0.5 |
+  | BleedLevel | 1 |
+  | BleedTime | 5 s |
+  | HighlightDuration | 5 s |
+  | HitboxSize | `(6, 6, 7)` |
+
+</Accordion>
+
+---
+
+## Reading killer configs at runtime
+
+```lua
+local Characters = require(game.ReplicatedStorage.Modules.Data.Characters)
+
+-- Full merged config (base + skin override + rig reference)
+local config = Characters.GetActorConfig("Killer", "JohnDoe", "Default")
+print(config.MaxHealth)          --> 1000
+print(config.SprintConfig.SprintSpeed) --> 30
+
+-- Single normalized ability config
+local impale = Characters:GetAbilityConfig("Killer", "JohnDoe", "Impale")
+print(impale.KnockbackForce)     --> 18
+print(impale.Amount)             --> 100  (normalized from HitboxAmount)
+
+-- Check class membership
+local isRushdown = Characters:IsActorInClass("Killer", "JohnDoe", "Rushdown")
+```
+
+<Tip>
+  The `Manager/init.luau` (or `Manager.luau`) for each killer is loaded by `Characters.GetBehaviorModule("Killer", name)`. It exposes an `Abilities` array and lifecycle hooks (`Init`, `OnExecute`) that the gameplay layer calls — you do not need to require it directly from data code.
+</Tip>

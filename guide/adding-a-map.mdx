@@ -1,0 +1,252 @@
+---
+title: "Adding a New Map to the Shattered Reality Rotation"
+sidebarTitle: "Adding a Map"
+description: "Create a map: Config metadata, Lighting properties, Map model with Spawns, optional variants like Bluu, and auto-discovery by RoundUtil/Maps.luau."
+---
+
+Maps in Shattered Reality are self-contained folders inside `ServerStorage/Maps/SelectableMaps/`. The round system discovers them automatically at runtime — no code changes are needed outside the folder itself. This guide walks through every file and folder you need, using **C00lCarnival** and its **Bluu** variant as the reference examples.
+
+<Steps>
+
+### Create the Folder Structure
+
+Create the following hierarchy inside `ServerStorage/Maps/SelectableMaps/`:
+
+```text
+YourMapName/
+├── Config.luau               -- map metadata, audio, and variants (required)
+├── Lighting/
+│   └── Properties.luau       -- lighting property overrides (recommended)
+├── Map                       -- the actual map Model template (required)
+└── Spawns/                   -- spawn point containers inside the Map model
+    ├── Killers/              -- BaseParts used as killer spawn locations
+    └── Survivors/            -- BaseParts used as survivor spawn locations
+```
+
+**Optional additions:**
+
+```text
+YourMapName/
+├── Bluu/                     -- alternate variant (any name)
+│   ├── Map                   -- variant-specific Map template
+│   ├── Lighting/
+│   │   └── Properties.luau   -- variant lighting overrides
+│   └── Objectives/
+│       └── SetupGenerators.luau  -- variant-specific objective config
+└── Objectives/
+    └── SetupGenerators.luau  -- base objective config
+```
+
+<Warning>
+  The `Map` child **must** exist directly inside `YourMapName/` (or inside a
+  variant subfolder). `RoundUtil/Maps.luau` calls `getMapTemplate` which looks
+  for a child named exactly `"Map"`. If it is missing, the map is logged as a
+  warning and excluded from the weighted selection pool.
+</Warning>
+
+### Write Config.luau
+
+`Config.luau` is the single source of truth for map identity, audio, and variant weights. It is read by `RoundUtil/Maps.luau`'s `normalizeMapConfig` function.
+
+```luau
+-- ServerStorage/Maps/SelectableMaps/YourMapName/Config.luau
+
+return {
+    Metadata = {
+        DisplayName = "Your Map Name",        -- shown in the round UI
+        Description = "A short flavour line", -- shown in map vote / lobby
+        Render      = "rbxassetid://0",       -- thumbnail image asset ID
+        Weight      = 1,                      -- relative selection weight (0 = never selected)
+    },
+
+    Audio = {
+        ThemeID     = "rbxassetid://0",  -- background music track
+        ThemeVolume = 0.6,               -- 0.0–1.0
+    },
+
+    -- Variants define weighted alternate versions of the same map.
+    -- "Normal" always refers to the base Map template in this folder.
+    -- Any other key must match a subfolder name containing its own Map model.
+    Variants = {
+        Normal = 80,   -- 80 % chance of picking the standard version
+        Bluu   = 20,   -- 20 % chance of picking the Bluu variant
+    },
+}
+```
+
+<Note>
+  `Weight` controls how often this map appears in the random selection pool
+  relative to other maps. A weight of `0` removes it from rotation entirely —
+  useful for work-in-progress maps that aren't ready for live play.
+</Note>
+
+<Accordion title="How variant selection works">
+  When `Variants` is present, `RoundUtil/Maps.luau` calls `selectVariant` which
+  performs a weighted random choice across the variant keys. If the chosen
+  variant is `"Normal"` (or if no `Variants` table is present), the base
+  `Map` template and `Lighting/` folder in `YourMapName/` are used.
+
+  For any non-`"Normal"` variant, the system looks for a subfolder named after
+  the variant (e.g. `Bluu/`) and uses its `Map` template. The variant's
+  `Lighting/` subfolder overrides the base lighting if present; otherwise the
+  base `Lighting/Properties.luau` is used.
+</Accordion>
+
+### Write Lighting/Properties.luau
+
+This module returns a flat table of `Lighting` property overrides. `RoundUtil/Maps.luau` calls `context.Util:SetLightingBasedOnData` with this table every time the map loads, and restores the original lighting when the round ends.
+
+```luau
+-- ServerStorage/Maps/SelectableMaps/YourMapName/Lighting/Properties.luau
+
+return {
+    ExposureCompensation = 0,
+    FogStart             = 0,
+    FogEnd               = 100000,
+    FogColor             = Color3.new(0.752941, 0.752941, 0.752941),
+    Ambient              = Color3.new(0.521569, 0.67451, 1),  -- morning blue tint
+    Archivable           = true,
+    ClockTime            = 5.6,  -- 5:36 AM pre-dawn
+}
+```
+
+The full list of supported properties (sourced from `RoundUtil/Maps.luau`):
+
+| Property | Type |
+|---|---|
+| `Ambient` | `Color3` |
+| `Brightness` | `number` |
+| `ClockTime` | `number` |
+| `ColorShift_Bottom` | `Color3` |
+| `ColorShift_Top` | `Color3` |
+| `EnvironmentDiffuseScale` | `number` |
+| `EnvironmentSpecularScale` | `number` |
+| `ExposureCompensation` | `number` |
+| `FogColor` | `Color3` |
+| `FogEnd` | `number` |
+| `FogStart` | `number` |
+| `GeographicLatitude` | `number` |
+| `GlobalShadows` | `boolean` |
+| `OutdoorAmbient` | `Color3` |
+| `ShadowSoftness` | `number` |
+
+Non-`ModuleScript` children of `Lighting/` (e.g. `Atmosphere`, `BloomEffect`, `ColorCorrectionEffect` instances) are also cloned directly into `game.Lighting` when the map loads, so you can include post-processing effects as normal Roblox instances inside the `Lighting/` folder.
+
+### Add Spawn Points Inside the Map Model
+
+The `Map` model must contain a `Spawns` folder with two subfolders: `Killers` and `Survivors`. Each subfolder should hold `BasePart` (or `SpawnLocation`) instances positioned at valid spawn locations.
+
+```text
+Map (Model)
+└── Spawns/
+    ├── Killers/
+    │   ├── SpawnPart   (BasePart — position determines killer spawn CFrame)
+    │   └── SpawnPart2
+    └── Survivors/
+        ├── SpawnPart
+        ├── SpawnPart2
+        └── ... (one per expected survivor slot)
+```
+
+`RoundUtil/Maps.luau` collects all descendant `BasePart`s from `Spawns/Killers/` and `Spawns/Survivors/`, shuffles them, and assigns each player a spawn CFrame. Spawn parts are made invisible and non-collidable automatically (`Transparency = 1`, `CanCollide = false`).
+
+<Warning>
+  If either `Spawns/Killers/` or `Spawns/Survivors/` is empty or missing, the
+  map load will fail with a warning and the round will be unable to start. Always
+  include at least one spawn part per folder.
+</Warning>
+
+### Add a Lighting Variant (Optional)
+
+A variant subfolder only needs a `Map` model. The `Lighting/Properties.luau` inside it overrides the base lighting for that variant.
+
+The **Bluu** variant of C00lCarnival uses a cooler ambient tint compared to the Normal version:
+
+```luau
+-- ServerStorage/Maps/SelectableMaps/C00lCarnival/Bluu/Lighting/Properties.luau
+
+return {
+    ExposureCompensation = 0,
+    FogStart             = 0,
+    FogEnd               = 100000,
+    FogColor             = Color3.new(0.752941, 0.752941, 0.752941),
+    Ambient              = Color3.new(0.564706, 0.556863, 0.737255), -- purple-blue tint
+    Archivable           = true,
+    ClockTime            = 5.6,
+}
+```
+
+Compared to the Normal `Ambient` (`Color3.new(0.521569, 0.67451, 1)` — sky blue), the Bluu variant uses a more saturated purple-blue (`Color3.new(0.564706, 0.556863, 0.737255)`) to create a distinct mood for the same geometry.
+
+<Tip>
+  You can give a variant a completely different `Map` model too — different
+  geometry, time of day, or weather effects — as long as the `Map` child exists
+  in the variant folder and its `Spawns/` hierarchy is valid.
+</Tip>
+
+### Add Objective Logic (Optional)
+
+If your map or variant has generator-style objectives, create an `Objectives/` subfolder containing a `SetupGenerators.luau` module. The module should return a table that the objective system reads when the map is instantiated.
+
+```luau
+-- ServerStorage/Maps/SelectableMaps/YourMapName/Bluu/Objectives/SetupGenerators.luau
+
+return { CommonObjective = "SetupGenerators" }
+```
+
+`RoundUtil/Maps.luau`'s `applyMapObjectives` function iterates the `Objectives` array from `Config` (if present) and calls `require(objectiveModule).Apply(map, objectiveConfig, definition)` for each entry. You can define the `Objectives` array in `Config.luau` under the root table:
+
+```luau
+-- Config.luau excerpt — add an Objectives array to trigger setup modules
+return {
+    Metadata = { ... },
+    Audio    = { ... },
+    Variants = { ... },
+
+    -- Each entry's Type must match a ModuleScript name inside Objectives/
+    Objectives = {
+        { Type = "SetupGenerators" },
+    },
+}
+```
+
+### How Maps Are Loaded by the Round System
+
+You do not need to edit any round handler code. `RoundUtil/Maps.luau` discovers maps automatically:
+
+1. **Discovery** — `buildWeightedPool` iterates every child of `ServerStorage/Maps/SelectableMaps/`, calls `buildDefinition` on each folder, and builds a weighted pool. Folders with `Weight = 0` or a missing `Map` child are excluded.
+2. **Variant selection** — `selectVariant` performs a weighted random choice across the `Variants` table. `"Normal"` resolves to the base folder; any other key resolves to a same-named subfolder.
+3. **Loading** — The chosen `Map` template is `:Clone()`d into `workspace`. Lighting is applied via `applyMapLighting`, spawn positions are collected by `assignSpawnPositions`, and `workspace:SetAttribute("CurrentMapName", ...)` is updated for UI.
+4. **Cleanup** — When the round ends, `CleanupCurrentMap` destroys the map instance, restores original lighting, and fires any `OnDestroyed` lifecycle callback defined in `Config.Lifecycle`.
+
+```luau
+-- RoundUtil/Maps.luau (excerpt — read-only reference)
+
+local function buildWeightedPool(context)
+    local selectableMaps = context.Maps:FindFirstChild("SelectableMaps")
+    local pool = {}
+    for _, mapFolder in ipairs(selectableMaps and selectableMaps:GetChildren() or {}) do
+        local definition = buildDefinition(mapFolder)
+        local weight = tonumber(definition.Config and definition.Config.Weight) or 1
+        if not definition.Template then
+            warn("[RoundUtil] Map is missing a Map template:", mapFolder.Name)
+        elseif weight > 0 then
+            table.insert(pool, { Folder = mapFolder, Definition = definition, Weight = weight })
+        end
+    end
+    return pool
+end
+```
+
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="Adding a Killer" icon="skull" href="/guide/adding-a-killer">
+    Killers are discovered from ReplicatedStorage using the same folder-based
+    auto-registration pattern.
+  </Card>
+  <Card title="Adding a Gamemode" icon="gamepad" href="/guide/adding-a-gamemode">
+    Gamemodes can override map lighting behaviour and modify spawn rules via
+    ApplyActorModifiers.
+  </Card>
+</CardGroup>

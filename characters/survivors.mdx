@@ -1,0 +1,393 @@
+---
+title: "Survivors Reference — Shattered Reality Characters"
+sidebarTitle: "Survivors"
+description: "Full ability breakdowns, sprint stats, and stance systems for every survivor in Shattered Reality: Kane, Brickbattler, JaneDoe, Nova, and !Vintage."
+---
+
+Survivors are the evasion and objective role in Shattered Reality. Standard survivors have 100 HP and tuned sprint stats that give them an edge in open-field escape, but killers have a raw speed advantage over sustained chases. Survivor ability kits lean toward utility — repositioning, stealth, healing, and area denial — rather than direct combat. Some survivors expose a `Stances` table that swaps `SprintConfig` and ability availability based on an active mode.
+
+<Note>
+  All values on this page come directly from each survivor's `Config` ModuleScript under `ReplicatedStorage/Systems/Characters/Survivors/`. Base-config values are shown; skin overrides may change `Info`, `Instances`, and other cosmetic fields.
+</Note>
+
+---
+
+## Kane
+
+Kane ("The Fierce Combatant") is a **Sentinel**-class survivor with the most complex kit on the survivor side. He has two stances — **Agile** and **Aggressive** — each with a distinct `SprintConfig` and a different subset of active abilities. The `SwitchStyle` ability (Ability1) toggles between them.
+
+<Accordion title="Default SprintConfig">
+
+  Applied on spawn before any stance is activated.
+
+  | Field | Value |
+  |---|---|
+  | `Stamina` / `MaxStamina` | 100 |
+  | `WalkSpeed` | 11.5 |
+  | `SprintSpeed` | 24 |
+  | `SprintLoss` | 12 |
+  | `SprintGain` | 24 |
+
+</Accordion>
+
+<Accordion title="Stance: Agile">
+
+  Faster sprint speed and walk speed with a smaller stamina pool. Unlocks the `Crouch` (Sneak) and `Knife` (Deep Cut) abilities.
+
+  | Field | Value |
+  |---|---|
+  | `MaxStamina` | 90 |
+  | `WalkSpeed` | 12.5 |
+  | `SprintSpeed` | 26 |
+  | `SprintLoss` | 14 |
+  | `SprintGain` | 20 |
+
+</Accordion>
+
+<Accordion title="Stance: Aggressive">
+
+  Slower but with a larger stamina pool. Unlocks the `AxeSwing` (Bonebreaker) and `Pistol` (Deadshot) abilities.
+
+  | Field | Value |
+  |---|---|
+  | `MaxStamina` | 115 |
+  | `WalkSpeed` | 10 |
+  | `SprintSpeed` | 23 |
+  | `SprintLoss` | 11 |
+  | `SprintGain` | 25 |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  **Switch Mode / SwitchStyle** (`Ability1`)
+
+  Toggles between Agile and Aggressive stances, swapping the active `SprintConfig` and ability loadout.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 5 s |
+
+  ---
+
+  **Bonebreaker / AxeSwing** (`Ability2` — Aggressive only)
+
+  A forward-lunge heavy axe swing that stuns the target and locks their visibility briefly.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 5 s |
+  | Damage | 25 |
+  | SpeedMultiplier | 0.5× (during cast) |
+  | HitboxSize | `(5, 6, 5)` |
+  | Amount | 16 |
+  | ForwardVelocity | 90 studs/s |
+  | ForwardDuration | 0.25 s |
+  | ForwardDelay | 0.80 s |
+  | StunTime | 2 s |
+  | VisibleTime | 0.95 s |
+
+  ---
+
+  **Sneak / Crouch** (`Ability3` — Agile only)
+
+  Makes Kane temporarily invisible and undetectable. Speed bonuses/penalties apply based on distance to the nearest killer.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 18 s |
+  | Duration | 6 s |
+  | InvisibilityLevel | 3 |
+  | UndetectableLevel | 4 |
+  | CancelDelay | 1.5 s |
+  | CrouchSpeedMultiplier | 1.15× |
+  | CloseSpeedDistance | 30 studs |
+  | CloseSpeedLevel | 2 |
+  | FarSlownessDistance | 50 studs |
+  | FarSlownessLevel | 1 |
+
+  ---
+
+  **Deep Cut / Knife** (`Ability4` — Agile only)
+
+  A quick forward lunge that deals damage, applies a brief resistance buff to Kane, and heavily slows the target.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 15 s |
+  | Damage | 25 |
+  | ResistanceLevel | 1 |
+  | ResistanceTime | 0.7 s |
+  | SlownessLevel | 3 |
+  | SlownessTime | 3.9 s |
+  | LungeForce | 8 |
+  | LungeDuration | 0.12 s |
+  | MoveLockTime | 1.85 s |
+
+  ---
+
+  **Deadshot / Pistol** (`Ability5` — Aggressive only)
+
+  A pistol with a charge-based system (`MaxCharges = 15`, reloaded over `ReloadDuration = 3 s`). Gun-jam events trigger a stun animation; knockback and stun duration scale dynamically between min/max values.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 18 s (jam cooldown) |
+  | MaxCharges | 15 |
+  | InitialCharges | 0 |
+  | ReloadDuration | 3 s |
+  | ShootDamage | 40 |
+  | ShootHitboxSize | 2.5 |
+  | ShootHitboxRange | 90 studs |
+  | ShootMinStunDuration | 1 s |
+  | ShootMaxStunDuration | 4 s |
+  | ShootMinKnockback | 5 |
+  | ShootMaxKnockback | 14 |
+  | MaxShootChance | 75 % |
+  | MinShootChance | 40 % |
+
+</Accordion>
+
+---
+
+## Brickbattler
+
+Brickbattler ("The Swift Rocketeer") is a **Sentinel**-class survivor specialising in explosive area denial. His Manager (`Behavior.luau`) handles weapon-visibility tweening for a Sword, FakeSword, and Launcher model, swapping them in/out as abilities activate.
+
+<Accordion title="Sprint & movement">
+
+  | Field | Value |
+  |---|---|
+  | `Stamina` / `MaxStamina` | 100 |
+  | `WalkSpeed` | 11.5 |
+  | `SprintSpeed` | 25 |
+  | `SprintLoss` | 12 |
+  | `SprintGain` | 24.5 |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  **Piercing Dash** (`Ability1`)
+
+  A fast forward dash that deals damage and stuns the target. On miss, Brickbattler suffers a temporary slow penalty. On hit, reduces the Rocket Launcher cooldown.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 30 s |
+  | PiercingDashDamage | 15 |
+  | PiercingDashStunTime | 1.2 s |
+  | ForceSpeed | 50 studs/s |
+  | HitboxSize | `(3.5, 4.2, 5.5)` |
+  | MissSlowLevel | 2 |
+  | MissSlowDuration | 1.2 s |
+  | RocketCooldown reduction | 11 s |
+
+  ---
+
+  **Rocket Launcher** (`Ability2`)
+
+  Fires a rocket at 130 studs/s with a blast radius of 8 studs. Stun duration scales based on how close to the center of the explosion the survivor/killer was hit. Killers receive reduced knockback rather than a full stun.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 40 s |
+  | RocketSpeed | 130 studs/s |
+  | RocketDamage | 40 |
+  | BlastRadius | 8 studs |
+  | Lifetime | 4 s |
+  | RocketStunTime | 2.5 s |
+  | RocketCloseStunTime | 1.35 s |
+  | RocketCloseStunDistance | 10 studs |
+  | RocketFullStunDistance | 28 studs |
+  | HearingLossTime | 4 s |
+  | KillerKnockbackForce | 8 |
+  | KillerKnockbackDuration | 0.16 s |
+  | PierceCooldown reduction | 9 s |
+
+  ```lua
+  RocketLauncher = {
+      Type        = "Ability2",
+      Cooldown    = 40,
+      RocketSpeed = 130,
+      RocketDamage = 40,
+      BlastRadius = 8,
+      HitboxAmount = math.huge,  -- unlimited samples while in flight
+      HitboxDelay  = 0.02,
+  }
+  ```
+
+</Accordion>
+
+---
+
+## JaneDoe
+
+JaneDoe ("The Blissful Widow") is a **Survivalist**-class survivor with slightly reduced health (95 HP) but the fastest default sprint speed of the standard roster at 29. Her `AbilityInfo` is currently empty — she has no active abilities. She is listed in JohnDoe's `Relations` array, which triggers an alternate chase theme during Last Man Standing when she is the final survivor.
+
+<Accordion title="Sprint & movement">
+
+  | Field | Value |
+  |---|---|
+  | `MaxHealth` | 95 |
+  | `Stamina` / `MaxStamina` | 100 |
+  | `WalkSpeed` | 11 |
+  | `SprintSpeed` | 29 |
+  | `SprintLoss` | 14 |
+  | `SprintGain` | 25.5 |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  JaneDoe has no active abilities (`AbilityInfo = {}`). Her kit relies entirely on movement speed to create distance from the killer.
+
+  <Note>
+    JaneDoe's connection to JohnDoe is encoded in his Config under `Relations = { "JaneDoe" }` and `LastManStandingEmotionalData`. Her own Config does not reference this relationship — it is a one-way declaration from the killer side.
+  </Note>
+
+</Accordion>
+
+---
+
+## Nova
+
+Nova is a **Survivalist**-class survivor (displayed as "Vintage" / "The Starlight Pursuer" in the current Config). Her folder is `Nova/` under `Survivors/`. The standard Config exposes only the `LunarEclipse` healing ability, with a modest 10 HP heal.
+
+<Accordion title="Sprint & movement">
+
+  | Field | Value |
+  |---|---|
+  | `MaxHealth` | 100 |
+  | `Stamina` / `MaxStamina` | 100 |
+  | `WalkSpeed` | 11.5 |
+  | `SprintSpeed` | 25 |
+  | `SprintLoss` | 12 |
+  | `SprintGain` | 24.5 |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  **Lunar Eclipse** (`Ability2`)
+
+  Channels a brief animation that heals Nova after a delay. Movement is locked for the cast duration.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 20 s |
+  | HealAmount | 10 HP |
+  | VFXDelay | 0.2 s |
+  | VFXDuration | 3 s |
+  | HealDelay | 2.185 s |
+  | LockMovement | `true` |
+
+</Accordion>
+
+---
+
+## !Vintage
+
+!Vintage is the limited/expanded variant of the Vintage character, stored in `!Vintage/` and accessed through the `!`-prefix resolution system. Unlike the Nova base config, !Vintage has a dramatically different stat profile — 500 HP, significantly larger stamina pool — and adds two additional abilities: `VoidThrow` and `JoblessOverload`.
+
+<Warning>
+  !Vintage's `MaxHealth` of 500 places it far outside normal survivor balance. Game mode logic that assumes survivor HP ≤ 100 will need to account for this value.
+</Warning>
+
+<Accordion title="Sprint & movement">
+
+  | Field | Value |
+  |---|---|
+  | `MaxHealth` | 500 |
+  | `Stamina` | 230 |
+  | `MaxStamina` | 250 |
+  | `WalkSpeed` | 13.5 |
+  | `SprintSpeed` | 25 |
+  | `SprintLoss` | 12 |
+  | `SprintGain` | 24.5 |
+
+</Accordion>
+
+<Accordion title="Abilities">
+
+  **Void Throw** (`Ability1`)
+
+  Throws a void projectile that travels at 80 studs/s. On impact (or manual detonation) it creates an implosion field pulling nearby targets inward, then deals damage in a 35-stud blast radius. Slow and stun values scale based on distance.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 15 s |
+  | Damage | 95 |
+  | ProjectileSpeed | 80 studs/s |
+  | Lifetime | 4 s |
+  | BlastRadius | 35 studs |
+  | LMSBlastRadius | 20 studs |
+  | ImplosionPower | 700 |
+  | ImplosionDuration | 0.35 s |
+  | StunTime | 1 s |
+  | SlowLevel | 3 |
+  | SlowTime | 3 s |
+  | ThrowDelay | 1.6 s |
+  | CastMoveMultiplier | 0.5× |
+
+  ---
+
+  **Lunar Eclipse** (`Ability2`)
+
+  Same mechanics as the Nova version but with a significantly higher heal.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 20 s |
+  | HealAmount | 54 HP |
+  | HealDelay | 2.185 s |
+  | LockMovement | `true` |
+
+  ---
+
+  **Jobless Overload** (`Ability3`)
+
+  Summons up to 5 autonomous projectile drones (`MaxCharges = 5`) that independently seek and fire at targets within 35 studs.
+
+  | Field | Value |
+  |---|---|
+  | Cooldown | 35 s |
+  | MaxCharges | 5 |
+  | Damage | 15 |
+  | AttackRange | 35 studs |
+  | FireInterval | 1.5 s |
+  | ThrowVelocity | 99 studs/s |
+  | HomingDistance | 35 studs |
+  | HomingTurnSpeed | 14 |
+  | ProjectileLifetime | 4 s |
+  | SummonDelay | 0.45 s |
+  | PlacementDistance | 7 studs |
+
+</Accordion>
+
+---
+
+## Reading survivor configs at runtime
+
+```lua
+local Characters = require(game.ReplicatedStorage.Modules.Data.Characters)
+
+-- Normalized base config
+local kane = Characters:GetSurvivorConfig("Kane")
+print(kane.MaxHealth)                     --> 100
+print(kane.SprintConfig.SprintSpeed)      --> 24
+print(kane.Stances.Agile.SprintConfig.SprintSpeed)  --> 26
+
+-- Full merged config with skin applied
+local config = Characters.GetActorConfig("Survivor", "Kane", "Dued1Kane")
+print(config.SkinName)  --> "Dued1Kane"
+
+-- Single ability config (normalized)
+local pistol = Characters:GetAbilityConfig("Survivor", "Kane", "Pistol")
+print(pistol.ShootDamage)   --> 40
+print(pistol.MaxCharges)    --> 15
+```
+
+<Tip>
+  Survivors whose folder name begins with `!` (e.g. `!Vintage`) are resolved by `normalize_search_text`, which strips the leading `!` before comparing. Passing `"Vintage"` or `"vintage"` to `GetSurvivorConfig` will find the `!Vintage` folder correctly.
+</Tip>

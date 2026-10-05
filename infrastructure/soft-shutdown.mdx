@@ -1,0 +1,199 @@
+---
+title: "Soft Shutdown System for Shattered Reality Servers"
+sidebarTitle: "Soft Shutdown"
+description: "Graceful server shutdown flow that notifies clients with an animated overlay, teleports all players to a fresh server, and preserves ProfileStore data."
+---
+
+When Roblox shuts down a game server — whether from a deployment update, a manual restart, or a place version change — it fires `game:BindToClose` with only a short window to clean up before the process exits. Shattered Reality uses a soft-shutdown system that hooks into that window: it broadcasts a shutdown message to every client immediately, then calls `TeleportService:TeleportAsync` to move all players to a new server instance rather than dropping them to the main menu. On the client, an animated full-screen overlay fades in to inform the player what is happening while the teleport is being prepared.
+
+This design is critical for data integrity. ProfileStore defers profile saves to a background loop, and a hard shutdown can terminate that loop before all dirty profiles are written. The soft-shutdown sequence gives ProfileStore enough time to flush pending writes before the server exits.
+
+---
+
+## Server side
+
+The server module lives at `ServerScriptService/Modules/Infrastructure/SoftShutdown.luau`. It exposes two methods and registers itself on `game:BindToClose`.
+
+```luau
+-- ServerScriptService/Modules/Infrastructure/SoftShutdown.luau
+local SoftShutdown = {}
+
+local DEFAULT_MESSAGE = "Moving to a new server..."
+
+-- Broadcasts a message string to all clients via the DeltaNetwork "SoftShutdown" event
+local function broadcast(message: string)
+    SoftShutdownEvent:FireAllClients(message or DEFAULT_MESSAGE)
+end
+```
+
+### `SoftShutdown:Init()`
+
+Registers the shutdown handler. Call this once from your server bootstrap script.
+
+```luau
+function SoftShutdown:Init()
+    game:BindToClose(function()
+        local msg = DEFAULT_MESSAGE
+        broadcast(msg)
+        self:TeleportPlayers(Players:GetPlayers(), msg)
+        task.wait(0.3)
+    end)
+end
+```
+
+The `BindToClose` callback:
+1. Broadcasts the default message to all connected clients so their overlay fades in immediately.
+2. Calls `TeleportPlayers` to queue the server-wide teleport.
+3. Waits 0.3 seconds before returning, giving `TeleportAsync` time to register the request before the server process exits.
+
+<Note>
+  The 0.3-second `task.wait` is intentional and should not be removed. Roblox's `BindToClose` callback must return within a few seconds, but the teleport request needs a brief moment to be acknowledged by the Teleport Service. Removing this wait can result in players being disconnected rather than teleported.
+</Note>
+
+---
+
+### `SoftShutdown:TeleportPlayers(players, message?)`
+
+```luau
+function SoftShutdown:TeleportPlayers(players: {Player}, message: string?): (boolean, string?)
+```
+
+Calls `TeleportService:TeleportAsync` to move the given player list to the same `game.PlaceId` in a fresh server. The teleport options carry a `TeleportData` payload so the destination server can detect that players arrived from a soft shutdown:
+
+```luau
+local options = Instance.new("TeleportOptions")
+options:SetTeleportData({
+    SoftShutdown = true,
+    Message = message or DEFAULT_MESSAGE,
+})
+
+TeleportService:TeleportAsync(game.PlaceId, players, options)
+```
+
+Returns `(true)` on success or `(false, errorString)` if `TeleportAsync` raises. If `players` is empty or nil the function returns `(false, "No players to teleport")` immediately.
+
+<Warning>
+  `TeleportAsync` can fail in Studio or when the place is private. Always check the return value when calling `TeleportPlayers` outside of the `BindToClose` context (e.g., from admin tools).
+</Warning>
+
+---
+
+## Client side
+
+The client module lives at `StarterPlayerScripts/Modules/Misc/SoftShutdown.luau`. It listens for the `SoftShutdown` DeltaNetwork event and builds a full-screen overlay with a fade-in animation and an animated progress bar.
+
+### `SoftShutdown:Init()`
+
+```luau
+function SoftShutdown:Init()
+    maid:Give(SoftShutdownEvent.OnClientEvent:Connect(function(msg)
+        self:Show(msg)
+    end))
+end
+```
+
+Connects to the `SoftShutdown` DeltaNetwork event. When the event fires the client calls `SoftShutdown:Show(msg)`.
+
+---
+
+### `SoftShutdown:Show(message?)`
+
+```luau
+function SoftShutdown:Show(message: string?)
+    local msg = message and tostring(message) ~= "" and message or "Moving to a new server..."
+    buildGui(msg)
+end
+```
+
+Calls the internal `buildGui` function. If a `SoftShutdownGui` `ScreenGui` already exists in `PlayerGui` it is reused and its text labels are updated in place. Otherwise a new `ScreenGui` is created with the following hierarchy:
+
+```
+SoftShutdownGui (ScreenGui, DisplayOrder 99999, IgnoreGuiInset true)
+└── Backdrop (Frame, Color #050508, full-size)
+    ├── BgImage (ImageLabel, rbxassetid://127860594689557, fades in)
+    ├── Vignette (ImageLabel, black vignette overlay)
+    ├── Title (TextLabel, "Servers are updating.", Merriweather, fades in after 0.3 s)
+    ├── SubLabel (TextLabel, message string, Merriweather, fades in after 0.5 s)
+    └── ProgressContainer (Frame, bottom-right corner)
+        └── ProgressBackground (Frame, 2 px height)
+            └── ProgressBar (Frame, animates back-and-forth indefinitely)
+```
+
+The overlay's `DisplayOrder` is set to `99999` to ensure it renders on top of all other game UI.
+
+---
+
+## End-to-end shutdown flow
+
+<Steps>
+  <Step title="Roblox triggers BindToClose">
+    The Roblox engine calls the server's `BindToClose` callback when the server is about to shut down (game update, manual restart, etc.).
+  </Step>
+  <Step title="Server broadcasts the shutdown message">
+    `broadcast("Moving to a new server...")` fires the `SoftShutdown` DeltaNetwork event to all currently connected clients.
+  </Step>
+  <Step title="Clients display the overlay">
+    Each client's `SoftShutdown:Init` listener receives the event and calls `SoftShutdown:Show(msg)`. The background image, title text, and sub-label fade in sequentially over approximately 1.3 seconds. The progress bar begins its infinite animation loop.
+  </Step>
+  <Step title="Server teleports all players">
+    `TeleportService:TeleportAsync(game.PlaceId, Players:GetPlayers(), options)` is called with `TeleportData = { SoftShutdown = true, Message = "..." }`. The teleport is batched — all players move to the same new server instance.
+  </Step>
+  <Step title="Brief wait before exit">
+    The server waits 0.3 seconds to allow the teleport request to register, then the `BindToClose` callback returns and the server process exits.
+  </Step>
+  <Step title="Players arrive in the new server">
+    Players load into the fresh server instance. The destination server can read `TeleportService:GetLocalPlayerTeleportData()` on the client to detect the `SoftShutdown = true` flag and handle any arrival logic (e.g., showing a brief "Welcome back" message).
+  </Step>
+</Steps>
+
+---
+
+## Network event
+
+Both the server and client modules use the same `DeltaNetwork` event definition:
+
+```luau
+local Delta = require(ReplicatedStorage.Modules.Network.DeltaNetwork)
+local SoftShutdownEvent = Delta.Event("SoftShutdown", Delta.String)
+```
+
+The event carries a single `string` argument — the shutdown message displayed to players. The server fires it with `FireAllClients`; the client listens with `OnClientEvent`.
+
+---
+
+## Bootstrap integration
+
+```luau
+-- ServerScriptService/Bootstrap.server.luau (example)
+local SoftShutdown = require(ServerScriptService.Modules.Infrastructure.SoftShutdown)
+SoftShutdown:Init()
+```
+
+```luau
+-- StarterPlayerScripts/Bootstrap.client.luau (example)
+local SoftShutdown = require(script.Parent.Modules.Misc.SoftShutdown)
+SoftShutdown:Init()
+```
+
+<Tip>
+  Both `:Init()` calls are lightweight — the server registers one `BindToClose` callback and the client registers one event connection. They are safe to call early in your bootstrap sequence before any game systems are initialised.
+</Tip>
+
+---
+
+## Why this matters for ProfileStore
+
+ProfileStore (and its predecessor DataStore2) writes player data asynchronously. On a hard server termination, any profiles that have accumulated unsaved changes since the last auto-save cycle can lose that data. The soft-shutdown sequence gives the data layer a chance to flush:
+
+<CardGroup cols={2}>
+  <Card title="Teleport preserves the session" icon="server">
+    Players are moved to a new server rather than disconnected. Their client session remains active, so there is no `Players.PlayerRemoving` event storm that would normally trigger mass profile saves under high concurrency.
+  </Card>
+  <Card title="BindToClose window is used" icon="clock">
+    The 0.3-second wait inside `BindToClose` keeps the server alive long enough for any final DataStore write calls that were queued by ProfileStore's shutdown hooks to complete before the process exits.
+  </Card>
+</CardGroup>
+
+<Warning>
+  If your game runs any custom `BindToClose` handlers that perform long-running DataStore operations, ensure `SoftShutdown:Init()` is called **before** those handlers are registered. Roblox executes `BindToClose` callbacks in registration order, and the teleport should happen as early as possible to maximise the window available for data saves.
+</Warning>

@@ -1,0 +1,233 @@
+---
+title: "Skins System — Shattered Reality Character Cosmetics"
+sidebarTitle: "Skins"
+description: "How skin folders are structured, discovered, and merged over base configs — covering Config.luau, Behavior.luau, and the # naming convention for skins."
+---
+
+Skins are cosmetic overlays that sit on top of a character's base Config. At minimum a skin contains a `Config.luau` that deep-merges selected fields (display name, description, instance references) over the character's default config. Skins may also ship a `Behavior.luau` (or `Behavior/init.luau`) for client-side visual effects — particle systems, sound swaps, or UI changes — that run independently of the core gameplay Manager.
+
+No gameplay stats are altered by a skin unless the skin's `Config.luau` explicitly overrides a field such as `MaxHealth` or `SprintConfig`. In practice, skins only override `Info`, `Instances`, and cosmetic render IDs.
+
+## Folder structure
+
+Skins live under `ReplicatedStorage/Assets/Skins/` and mirror the same Killer/Survivor split as the character system:
+
+```
+Assets/Skins/
+├── Killers/
+│   └── TheClown/
+│       ├── LaughingStockTheClown/
+│       │   └── Config.luau
+│       └── PorpolDummersTheClown/
+│           └── Config.luau
+└── Survivors/
+    ├── Brickbattler/
+    │   └── El33tBrickbattler/
+    │       └── Config.luau
+    └── Kane/
+        ├── #Yourself2Kane/
+        │   ├── Config.luau
+        │   └── Behavior.luau   ← optional client-side effects
+        ├── #YourselfKane/
+        │   ├── Config.luau
+        │   └── Behavior.luau
+        ├── Dued1Kane/
+        ├── GirlKane/
+        ├── HugeKane/
+        ├── JimGreyKane/
+        ├── LegacyKane/
+        ├── LegacyKaneModerator/
+        └── XxAevonbonecrusher12xXKane/
+```
+
+Each skin is a **Folder** inside the character's skin directory. The folder name is the canonical skin name used in all API calls. A skin without a `Config.luau` is invisible to the skin system — `GetSkinConfigModule` will return `nil` and the base config is used unmodified.
+
+<Note>
+  Skin folder names beginning with `#` denote **limited or special-access skins** (e.g. `#YourselfKane`, `#Yourself2Kane`). The `#` is part of the folder name and must be included in the exact skin name string. However, `Characters.ResolveSkinName` uses fuzzy matching via `normalize_search_text`, which strips `#` (along with `!`, spaces, underscores, and hyphens) when scoring candidates — so passing `"yourself"` as a query will still find `#YourselfKane`.
+</Note>
+
+## Config.luau structure
+
+A skin's `Config.luau` returns a partial character config table. Only the fields present in the skin config are merged; all other fields fall back to the character's base config. The merge is a **deep overwrite** (`merge_into`), not a missing-only fill.
+
+The `#YourselfKane` skin is a representative example:
+
+```lua
+-- Assets/Skins/Survivors/Kane/#YourselfKane/Config.luau
+return {
+    Info = {
+        DisplayName = "Yourself",
+        Description = "Son aint that you?",
+    },
+    Price = 0,
+    NormalRender    = "",
+    TransparentRender = "",
+    Instances = {
+        Fleshcutter  = script.Fleshcutter,
+        SeveringBlade = script.SeveringBlade,
+        -- Deathsbarrel is not overridden; base config value is kept
+    },
+}
+```
+
+Fields omitted from the skin config — `MaxHealth`, `SprintConfig`, `AbilityInfo`, `Animations`, etc. — are untouched and read directly from Kane's base config after the merge.
+
+## Behavior.luau
+
+If a skin folder contains a `Behavior.luau` (or a `Behavior/` folder with an `init.luau`), `Characters.GetSkinManagerModule` will return it. The gameplay layer is responsible for requiring and initialising it; the `Characters` module only locates the file.
+
+```lua
+-- How the gameplay layer retrieves a skin's behavior module
+local skinBehavior = Characters.GetSkinManagerModule("Survivor", "Kane", "#YourselfKane")
+if skinBehavior then
+    local behavior = require(skinBehavior)
+    -- behavior:Init(character, actor)  -- called by the client manager
+end
+```
+
+A `Behavior.luau` is optional. Skins that only swap the rig's appearance via `Instances` references do not need one.
+
+## How skins are merged
+
+`Characters.GetActorConfig` is the single entry point for obtaining a fully resolved config. It applies three layers in order:
+
+<Steps>
+  <Step title="Load base config">
+    `Characters.GetDefaultConfigModule("Killer"/"Survivor", characterName)` locates and requires the character's `Config` ModuleScript. The result is deep-cloned so mutations do not affect the cached base.
+  </Step>
+  <Step title="Apply character-level overrides">
+    `Characters:ApplyToActorConfig` merges any fields registered in `Characters.Killers[name]` or `Characters.Survivors[name]` — these are the already-normalized tables built at module load time. Sprint, class, groups, kill effects, and abilities are selectively merged.
+  </Step>
+  <Step title="Apply skin config override">
+    If `skinName` is provided and is not `"Default"`, `Characters.GetSkinConfigModule` locates the skin's `Config.luau` and calls `merge_into(actorConfig, skinConfig)`, performing a deep overwrite of every field present in the skin table.
+  </Step>
+</Steps>
+
+After all merges, `normalize_actor_config` runs a final normalization pass (aliasing `Sprint`↔`SprintConfig`, `Abilities`↔`AbilityInfo`, and running `normalize_ability_config` on every ability entry), then `actor_config.Rig` is resolved via `Characters.GetActorRig`.
+
+```lua
+-- Full pipeline in Characters.GetActorConfig
+local function Characters.GetActorConfig(actor_type, actor_name, skin_name)
+    local default_config = load_default_actor_config(actor_type, actor_name)
+    local actor_config   = Characters:ApplyToActorConfig(default_config, actor_type, actor_name)
+
+    if skin_name and skin_name ~= "" and skin_name ~= "Default" then
+        local skin_config_module = Characters.GetSkinConfigModule(actor_type, actor_name, skin_name)
+        if skin_config_module then
+            local ok, skin_config = pcall(require, skin_config_module)
+            if ok then
+                merge_into(actor_config, skin_config)
+            end
+        end
+    end
+
+    actor_config.Rig     = Characters.GetActorRig(actor_type, actor_name, skin_name) or actor_config.Rig
+    actor_config.SkinName = skin_name or "Default"
+    return normalize_actor_config(actor_config, actor_name)
+end
+```
+
+## Skin discovery API
+
+```lua
+local Characters = require(game.ReplicatedStorage.Modules.Data.Characters)
+
+-- List all skin names for a character (always includes "Default" as first entry)
+local skins = Characters.ListSkinNames("Survivor", "Kane")
+-- → { "Default", "#Yourself2Kane", "#YourselfKane", "Dued1Kane", "GirlKane",
+--     "HugeKane", "JimGreyKane", "LegacyKane", "LegacyKaneModerator",
+--     "XxAevonbonecrusher12xXKane" }
+
+-- Fuzzy-resolve a query string to a canonical skin name
+local resolved, candidates = Characters.ResolveSkinName("Survivor", "Kane", "legacy")
+-- resolved   → "LegacyKane"  (exact prefix match scores higher than partial)
+-- candidates → { "LegacyKane", "LegacyKaneModerator" }
+
+-- Get the Config module for a specific skin
+local configModule = Characters.GetSkinConfigModule("Survivor", "Kane", "#YourselfKane")
+
+-- Get the Behavior module for a specific skin (nil if no Behavior.luau)
+local behaviorModule = Characters.GetSkinManagerModule("Survivor", "Kane", "#YourselfKane")
+
+-- Get the rig model for a skin (falls back to Default rig if skin rig absent)
+local rig = Characters.GetActorRig("Survivor", "Kane", "Dued1Kane")
+```
+
+## Available skins
+
+<Tabs>
+  <Tab title="Survivors — Kane">
+    | Skin folder | Special? |
+    |---|---|
+    | `#YourselfKane` | ✅ Limited (`#` prefix) |
+    | `#Yourself2Kane` | ✅ Limited (`#` prefix) |
+    | `Dued1Kane` | — |
+    | `GirlKane` | — |
+    | `HugeKane` | — |
+    | `JimGreyKane` | — |
+    | `LegacyKane` | — |
+    | `LegacyKaneModerator` | — |
+    | `XxAevonbonecrusher12xXKane` | — |
+  </Tab>
+  <Tab title="Survivors — Brickbattler">
+    | Skin folder | Special? |
+    |---|---|
+    | `El33tBrickbattler` | — |
+  </Tab>
+  <Tab title="Killers — TheClown">
+    | Skin folder | Special? |
+    |---|---|
+    | `LaughingStockTheClown` | — |
+    | `PorpolDummersTheClown` | — |
+  </Tab>
+</Tabs>
+
+<Note>
+  Only characters with at least one skin folder appear under `Assets/Skins/`. Killers other than TheClown and survivors other than Kane and Brickbattler currently have no registered skins; `ListSkinNames` will return `{ "Default" }` for them, and `ResolveSkinName("Survivor", "JaneDoe", anything)` resolves to `"Default"`.
+</Note>
+
+## Adding a new skin
+
+<Steps>
+  <Step title="Create the skin folder">
+    Add a folder at `Assets/Skins/<Killers|Survivors>/<CharacterName>/<SkinName>/`. Use the `#` prefix if the skin is limited-access.
+  </Step>
+  <Step title="Write Config.luau">
+    Return a table containing only the fields you want to override. At minimum include `Info.DisplayName` and any `Instances` references your rig needs.
+
+    ```lua
+    -- Assets/Skins/Survivors/Kane/MyCoolKane/Config.luau
+    return {
+        Info = {
+            DisplayName = "My Cool Kane",
+            Description = "A brand new look.",
+        },
+        Instances = {
+            Fleshcutter  = script.Fleshcutter,
+            SeveringBlade = script.SeveringBlade,
+        },
+    }
+    ```
+  </Step>
+  <Step title="Add a rig (optional)">
+    Place a `Model` named after the skin (or `Default`) inside `Assets/Rigs/<Killers|Survivors>/<CharacterName>/`. If absent, `GetActorRig` falls back to the character's default rig.
+  </Step>
+  <Step title="Add Behavior.luau (optional)">
+    Create `Behavior.luau` in the skin folder if you need client-side effects. Expose an `Init(character, actor)` function; the client manager will call it after the skin is equipped.
+
+    ```lua
+    -- Assets/Skins/Survivors/Kane/MyCoolKane/Behavior.luau
+    local Behavior = {}
+
+    function Behavior:Init(character, actor)
+        -- attach particles, override sounds, etc.
+    end
+
+    return Behavior
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Skin `Config.luau` files use `script.ChildName` to reference child Instances. These references are resolved relative to the Config script's location in the DataModel, not the character's base Config location. Make sure any Instance referenced in a skin Config is a direct child of that skin's Config script.
+</Warning>

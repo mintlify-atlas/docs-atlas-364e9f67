@@ -1,0 +1,201 @@
+---
+title: "Round Lifecycle — States, Stages, and Timing"
+sidebarTitle: "Round Lifecycle"
+description: "Complete walkthrough of the Shattered Reality round lifecycle: states, stages, HUD phases, timing constants, reward values, and key delay thresholds."
+---
+
+The `RoundHandler` module (`ServerScriptService/Modules/Handlers/RoundHandler/init.luau`) is the single source of truth for all round flow. It exposes a small public API (`Init`, `StartIntermission`, `EndIntermission`, `BeginRoundFlow`, `StartRound`, `EndRound`, `AddRoundTime`, `SetRoundTime`) and maintains two pieces of shared state: a `CurrentSession` table that lives for the duration of one round, and an `Intermission` table that is recreated at the start of every intermission. All state transitions are written to `workspace` attributes so that client scripts and the HUD can react without polling.
+
+---
+
+## Constants
+
+### Timing
+
+| Constant | Value | Description |
+|---|---|---|
+| `IntermissionTime` | `45` seconds | Default countdown duration for each intermission. |
+| `IntermissionTickInterval` | `1` second | How often the intermission timer decrements. |
+| `PlayerRespawnTime` | `3` seconds | `Players.RespawnTime` during intermission. Set to `999999` during an active round. |
+| `INTERMISSION_RETRY_TIME` | `3` seconds | Shortened intermission used when `RestartIntermissionSoon` is called after a failed round start. |
+
+### Post-Round Delays
+
+| Constant | Value | Description |
+|---|---|---|
+| `BeforeMapTeleport` | `0.25 s` | Delay between `BeginRoundFlow` and the `LoadingMap` stage. |
+| `BeforeClearActors` | `0.20 s` | Delay after `EndRound` before `ClearActors` is called. |
+| `BeforeRestartIntermission` | `0.35 s` | Delay after `EndRound` before `StartIntermission` is called again. |
+| `DestroyLMSTheme` | `0.40 s` | Delay before the last-man-standing theme is torn down. |
+
+### Rewards
+
+| Key | Cash | CharacterPoints | Notes |
+|---|---|---|---|
+| `WonAsSurvivor` | `20` | `10` | Survivor on the winning team. |
+| `WonAsKiller` | `40` | `15` | Killer on the winning team. |
+| `LostAsKiller` | `10` | `0` | Killer when survivors win. |
+| `LostAsSurvivorSurvived60` | `20` | `0` | Survivor who lasted ≥ `SurvivalTimeThreshold` (`60` s) but lost. |
+
+<Note>
+Rewards are skipped entirely when `session.WinningDisabled == true` (i.e. when `workspace:GetAttribute("NoTimer") == true` at round start, or when the server is a private server). `AdjustRoundReward` in the active gamemode definition can further scale individual reward payouts — see [Gamemodes](/gameplay/gamemodes).
+</Note>
+
+---
+
+## States and Stages
+
+`RoundHandler` tracks two orthogonal workspace attributes:
+
+| Attribute | Values | Set By |
+|---|---|---|
+| `workspace.RoundPhase` | `Reset`, `Intermission`, `Round` | `setRoundState()` |
+| `workspace.RoundStage` | `Reset`, `Intermission`, `Preparing`, `LoadingMap`, `ActorsReady`, `ActiveRound`, `RoundEnding` | `setRoundState()` and inline assignments |
+
+### Phase → Stage Mapping
+
+| Phase | Stages encountered |
+|---|---|
+| `Reset` | `Reset` |
+| `Intermission` | `Intermission` → `Preparing` → `LoadingMap` → `ActorsReady` |
+| `Round` | `ActiveRound` → `RoundEnding` |
+
+---
+
+## HUD State Reference
+
+The `RoundHudPhase` workspace attribute drives the client HUD ticker. It is updated by `fireRoundHudTime` (during a round) and `fireIntermissionHudTime` (during intermission).
+
+| Value | Meaning |
+|---|---|
+| `NoPlayers` | Fewer than 2 eligible (non-AFK) players; intermission is paused. |
+| `AllPlayersAfk` | All present players have `Setting_AFKMode = true`. |
+| `Intermission` | Normal countdown is running. |
+| `Survive` | Round is active; timer is counting down normally. |
+| `LastManStanding` | Exactly 1 killer and 1 survivor remain; LMS music is playing. |
+| `Ingame timer disabled` | `workspace:GetAttribute("NoTimer") == true`; timer shows `5999`. |
+
+---
+
+## Full Round Flow
+
+<Steps>
+  <Step title="Reset">
+    `RoundHandler:Reset()` is called (either at server start or after `EndRound`). It cancels all active handles, calls `CleanupSession`, creates a fresh `Intermission` table with `CurrentTime = 45`, and sets `RoundPhase = Reset` / `RoundStage = Reset`.
+  </Step>
+
+  <Step title="Intermission begins">
+    `RoundHandler:StartIntermission()` sets `RoundPhase = Intermission` / `RoundStage = Intermission` and resets `Players.RespawnTime = 3`.
+
+    A `RunService.Heartbeat` connection fires every `IntermissionTickInterval` second. On each tick:
+
+    - If fewer than 2 eligible players exist the HUD switches to `NoPlayers` / `AllPlayersAfk` and the timer is frozen.
+    - If `NoTimer` is `true` the HUD displays `Intermission` but the countdown does not advance.
+    - Otherwise `CurrentTime` is decremented by 1 and broadcast to clients.
+
+    When `CurrentTime` reaches `0` → `BeginRoundFlow` is called.
+  </Step>
+
+  <Step title="Round flow begins (Preparing → LoadingMap)">
+    `BeginRoundFlow` cancels the intermission tick, calls `CleanupSession`, and immediately sets `RoundStage = Preparing`. A gamemode is selected via `RoundUtil:SelectGamemode`.
+
+    After `BeforeMapTeleport` (0.25 s), `RoundStage = LoadingMap`. Any players who left during the delay are removed from the roster. `RoundUtil:TeleportToMap` clones the map template, applies lighting and objectives, assigns spawn positions, and teleports players.
+  </Step>
+
+  <Step title="Actors ready (ActorsReady)">
+    `RoundUtil:InitGamemode` calls the gamemode's `StartRound`, which runs `Actors.SelectKiller` and `Actors.CreateSurvivors`. Both killer and survivor actors are created via `ActorHandler:CreateActor`. `RoundStage = ActorsReady` and `RoundUtil:SetRoundMetadata` broadcasts the active gamemode and map name via workspace attributes.
+
+    `WarmRoundActors` is called earlier during `Preparing` so that actor modules are pre-loaded before the map is ready.
+  </Step>
+
+  <Step title="Active round (ActiveRound)">
+    `RoundHandler:StartRound()` transitions to `RoundPhase = Round` / `RoundStage = ActiveRound`. `Players.RespawnTime` is set to `999999` to prevent respawning mid-round.
+
+    A `RunService.Heartbeat` connection runs `TickRound` on every frame:
+
+    - If `NoTimer` is active only the HUD is refreshed; the timer is not advanced.
+    - When `timeLeft ≤ 0`, or when alive-killer count or alive-survivor count drops to `0`, `EndRound` is called.
+    - When exactly 1 killer and 1 survivor remain, `RoundUtil:GetLMS` activates Last Man Standing mode and the `LastManStanding` HUD phase.
+  </Step>
+
+  <Step title="Round ending (RoundEnding)">
+    `RoundHandler:EndRound()` sets `RoundStage = RoundEnding` and fires `RoundEnded` (a `Signal` instance). It then:
+
+    1. Builds a result table via `Participants.BuildRoundResult` (winner side, duration, map, gamemode).
+    2. Records it via `Participants.RecordRoundResult` (webhook log).
+    3. Awards rewards via `Participants.AwardRoundResult` if `WinningDisabled` is `false`.
+    4. Deactivates all active LMS players.
+    5. Calls `RoundHandler:Reset()` to clear session state.
+    6. Fires the `ManageVisuals` DeltaNetwork event with `"Apply"`, `"BlackCover"`, and the post-round cover data (fade-in `0.5 s`, remove after `0.65 s`, duration `0.75 s`).
+  </Step>
+
+  <Step title="Back to intermission">
+    After `BeforeClearActors` (0.20 s) → `RoundUtil:ClearActors` respawns all players in lobby.  
+    After `BeforeRestartIntermission` (0.35 s) → `RoundHandler:StartIntermission()` is called, beginning the next cycle.
+  </Step>
+</Steps>
+
+---
+
+## Session Object
+
+`createSession` returns the following table, accessible as `RoundHandler.CurrentSession` during a live round.
+
+| Field | Type | Description |
+|---|---|---|
+| `Time` | `number` | Total round time in seconds (set from gamemode). |
+| `TimePast` | `number` | Seconds elapsed since round start (used for `NoTimer` sub-second checks). |
+| `ActualTimePast` | `number` | Unthrottled elapsed seconds; not reset by `AddTime`. |
+| `CurrentGamemode` | `table` | The active gamemode definition. |
+| `CurrentGamemodeRuntime` | `table` | Runtime returned by `StartRound`; holds `SelectedActor`, `SelectedKillers`, etc. |
+| `CurrentMap` | `Instance` | The cloned map `Model` parented into `workspace`. |
+| `CurrentMapConfig` | `table` | Normalised config from the map's `Config.luau`. |
+| `CurrentMapFolder` | `Instance` | The original `ServerStorage` map folder. |
+| `RoundRoster` | `{Player}` | Players locked into the round at start. |
+| `RoundRosterUserIds` | `{number}` | UserId array of `RoundRoster`; survives player removal. |
+| `Participants` | `{table}` | Captured participant rows (actorType, actorName, actorSkin, etc.). |
+| `ParticipantStats` | `{[UserId]: {SurvivalTime, IsAlive}}` | Per-participant survival tracking started when `ActiveRound` begins. |
+| `LastManStanding` | `boolean` | Set to `true` when LMS mode activates. |
+| `WinningDisabled` | `boolean` | `true` when rewards and winning logic are suppressed (`NoTimer`). |
+| `RoundStartedAt` | `number` | Server timestamp from `workspace:GetServerTimeNow()`. |
+
+---
+
+## ManageVisuals Event
+
+`ManageVisuals` is a `DeltaNetwork` event declared as:
+
+```luau
+local ManageVisuals = Delta("ManageVisuals", Delta.String, Delta.String, Delta.Table)
+```
+
+It is fired server → client at the end of every round to trigger the black cover transition:
+
+```luau
+ManageVisuals:Fire("Apply", "BlackCover", {
+    Time = 0.5,        -- fade-in duration
+    RemoveTime = 0.65, -- delay before the cover starts fading out
+    Duration = 0.75,   -- total cover duration
+})
+```
+
+The `Initializer` script on the client listens to this event and delegates to the `Visuals` utility module to apply the named effect.
+
+---
+
+## Admin Helpers
+
+Two public methods let server-side scripts manipulate the active round timer at runtime.
+
+```luau
+-- Add or remove seconds from the current round
+local ok, msg = RoundHandler:AddRoundTime(30)   -- +30 s
+local ok, msg = RoundHandler:AddRoundTime(-10)  -- -10 s
+
+-- Replace the round timer entirely (resets TimePast to 0)
+local ok, msg = RoundHandler:SetRoundTime(60)
+```
+
+<Warning>
+Both methods return `false` if no round is currently active. Always check the first return value before acting on `msg`.
+</Warning>

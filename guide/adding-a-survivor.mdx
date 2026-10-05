@@ -1,0 +1,473 @@
+---
+title: "Adding a New Survivor Character to Shattered Reality"
+sidebarTitle: "Adding a Survivor"
+description: "Step-by-step guide for creating a survivor character with Config, Manager, Stances, and Server/Client ability scripts, using Kane as the reference example."
+---
+
+Survivors share the same auto-discovery pipeline as killers, but they live under `ReplicatedStorage/Systems/Characters/Survivors/` and carry a few concepts unique to their side: a default `MaxHealth` of 100 (versus 1000 for killers), a **Stances** system that swaps sprint stats and animations at runtime, and an `ActorDefaults` table in the Manager for per-ability runtime state. This guide walks through everything you need, using **Kane** as the canonical reference.
+
+<Steps>
+
+### Create the Folder Structure
+
+Create the following hierarchy inside `ReplicatedStorage/Systems/Characters/Survivors/`:
+
+```text
+YourSurvivorName/
+├── Config.luau                     -- character config (required)
+├── Manager.luau                    -- server/client lifecycle (required)
+└── Abilities/
+    └── YourAbilityName/
+        ├── Server.luau             -- server-side hitbox & damage logic
+        └── Client.luau            -- client-side VFX & animation feedback
+```
+
+<Note>
+  Survivors use a flat `Config.luau` and `Manager.luau` at the character root
+  rather than the nested `Config/init.luau` / `Manager/init.luau` pattern used
+  by killers. Both layouts are supported by `Characters.luau` — use whichever
+  is consistent with the rest of your survivor roster.
+</Note>
+
+`Characters.luau` scans `ReplicatedStorage/Systems/Characters/Survivors/` at startup and registers every child `Folder` that contains a valid `Config` module. The folder name is the internal character ID used everywhere (e.g. `"Kane"`).
+
+### Write Config.luau
+
+`Config.luau` returns a plain table. Key differences from killers:
+
+- `MaxHealth` is **100** for a standard survivor (killers default to 1000).
+- The `Stances` table defines named movement profiles. Each stance overrides the base `SprintConfig` and drives stance-specific animations (`IdleAgile`, `WalkAgile`, `RunAgile`, etc.).
+- `AbilityInfo` entries can carry a `Mode` field that limits the ability to a specific stance (e.g. `Mode = "Aggressive"` hides it when in `"Agile"` stance).
+
+```luau
+-- ReplicatedStorage/Systems/Characters/Survivors/YourSurvivorName/Config.luau
+
+local function asset(id)
+    return "rbxassetid://" .. tostring(id)
+end
+
+return {
+    -- ── Identity ──────────────────────────────────────────────────────────
+    Info = {
+        DisplayName = "Your Survivor",
+        Description = "A short flavour tagline",
+    },
+    Class  = "Sentinel",
+    Price  = 0,
+    MaxHealth = 100,  -- survivors have 100 HP; killers have 1000
+
+    AbilityFrameImage  = asset(0),
+    AnimationBlendTime = 0.18,  -- seconds for stance-switch animation blends
+
+    -- Tool Model instances parented to this Config ModuleScript
+    Instances = {
+        -- MyWeapon = script.MyWeapon,
+    },
+
+    -- ── Base Sprint / Movement ────────────────────────────────────────────
+    -- Active when no stance is applied or before the first stance is set.
+    SprintConfig = {
+        Stamina     = 100,
+        MaxStamina  = 100,
+        WalkSpeed   = 11.5,
+        SprintSpeed = 24,
+        SprintLoss  = 12,
+        SprintGain  = 24,
+    },
+
+    -- ── Stances ───────────────────────────────────────────────────────────
+    -- Each key is a stance name. The Manager sets the active stance via the
+    -- "KaneStance" attribute pattern; adapt the attribute name to your character.
+    Stances = {
+        Agile = {
+            SprintConfig = {
+                Stamina     = 100,
+                MaxStamina  = 90,
+                WalkSpeed   = 12.5,
+                SprintSpeed = 26,
+                SprintLoss  = 14,
+                SprintGain  = 20,
+            },
+        },
+        Aggressive = {
+            SprintConfig = {
+                Stamina     = 100,
+                MaxStamina  = 115,
+                WalkSpeed   = 10,
+                SprintSpeed = 23,
+                SprintLoss  = 11,
+                SprintGain  = 25,
+            },
+        },
+    },
+
+    -- ── Animations ────────────────────────────────────────────────────────
+    -- Stance animations follow the naming pattern: Idle{Stance}, Walk{Stance},
+    -- Run{Stance}. The Manager swaps them when the active stance changes.
+    Animations = {
+        IdleAgile      = asset(0),
+        WalkAgile      = asset(0),
+        RunAgile       = asset(0),
+        IdleAggressive = asset(0),
+        WalkAggressive = asset(0),
+        RunAggressive  = asset(0),
+        Attacks = {
+            AxeSwing = asset(0),
+            -- Add one key per ability animation referenced in ability scripts.
+        },
+    },
+
+    -- ── Abilities ─────────────────────────────────────────────────────────
+    AbilityInfo = {
+        -- Stance-switch ability (no Mode → always visible)
+        SwitchStyle = {
+            Name        = "Switch Mode",
+            Cooldown    = 5,
+            LayoutOrder = 5,
+            Type        = "Ability1",
+            Icon        = asset(0),
+        },
+
+        -- Aggressive-only melee
+        AxeSwing = {
+            Name             = "Bonebreaker",
+            Cooldown         = 5,
+            LayoutOrder      = 4,
+            Type             = "Ability2",
+            Icon             = asset(0),
+            Mode             = "Aggressive",  -- hidden while in Agile stance
+            Damage           = 25,
+            SpeedMultiplier  = 0.5,
+            HitboxOffset     = CFrame.new(0, -1, -4),
+            HitboxSize       = Vector3.new(5, 6, 5),
+            HitboxAmount     = 16,
+            HitboxDelay      = 0.012,
+            HitboxLifetime   = 0.2,
+            HitboxSpawnDelay = 0.80,
+            ForwardDelay     = 0.80,
+            ForwardVelocity  = 90,
+            ForwardDuration  = 0.25,
+            StunTime         = 2,
+            VisibleTime      = 0.95,
+        },
+
+        -- Agile-only stealth ability (passive-style: self-buff, no attack)
+        Crouch = {
+            Name                 = "Sneak",
+            Cooldown             = 18,
+            Duration             = 6,
+            LayoutOrder          = 3,
+            Type                 = "Ability3",
+            Icon                 = asset(0),
+            Mode                 = "Agile",
+            InvisibilityLevel    = 3,
+            UndetectableLevel    = 4,
+            CancelDelay          = 1.5,
+            CrouchSpeedMultiplier = 1.15,
+        },
+    },
+}
+```
+
+<Warning>
+  **`MaxHealth = 100` is intentional for survivors.** Killers default to 1000.
+  Setting a survivor's `MaxHealth` above 100 will feel unbalanced unless a
+  gamemode's `ApplyActorModifiers` deliberately scales it (as `DoubleKiller`
+  does when there are two or fewer survivors remaining).
+</Warning>
+
+<Warning>
+  **`Type` values are constrained.** Valid ability types are `"AbilityM1"`,
+  `"Ability1"` through `"Ability5"`. Survivor abilities do not typically use
+  `"AbilityM1"` because survivors do not have a primary melee slot by default,
+  but the pipeline accepts it.
+</Warning>
+
+### Write Manager.luau
+
+The Manager is shared between server and client. Beyond the `Init` hook, survivor managers commonly expose:
+
+- **`Behavior.Abilities`** — ordered array of `ModuleScript` references, consumed by the ability manager.
+- **`Behavior.ActorDefaults`** — a flat key-value table. Every entry is copied onto the `actor` object when the character spawns, giving ability scripts a clean per-actor state bag.
+- **`Behavior:BindCharacter(character, maid, actor)`** — called client-side after the character model exists; use it to wire attribute-changed signals and remote event listeners.
+- **`Behavior:BindActorUi(actor)`** — called client-side after the HUD is ready; use it to sync UI state (e.g. hiding/showing stance-specific ability slots).
+
+```luau
+-- ReplicatedStorage/Systems/Characters/Survivors/YourSurvivorName/Manager.luau
+
+local Players          = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService       = game:GetService("RunService")
+
+local Abilities = script.Parent:WaitForChild("Abilities")
+local Delta     = require(ReplicatedStorage.Modules.Network.DeltaNetwork)
+local Maid      = require(ReplicatedStorage.Modules.Core.Maid)
+
+-- Declare a network event for stance changes (server → client)
+local StanceEvent = Delta.Event("YourSurvivorStanceEvent", Delta.Instance, Delta.String)
+local LocalPlayer = Players.LocalPlayer
+
+local Behavior = {}
+
+-- ── Ability registry ──────────────────────────────────────────────────────
+Behavior.Abilities = {
+    Abilities.SwitchStyle,
+    Abilities.AxeSwing,
+    Abilities.Crouch,
+}
+
+-- ── Per-actor runtime state ───────────────────────────────────────────────
+-- These keys are copied onto the actor table at spawn time. Ability scripts
+-- read and write them as actor.YourSurvivorAxeSwingToken etc.
+Behavior.ActorDefaults = {
+    YourSurvivorStance        = "Aggressive",
+    YourSurvivorAxeSwingToken = 0,
+    YourSurvivorAxeHitbox     = nil,
+}
+
+-- ── Helper: apply sprint config for a stance ─────────────────────────────
+local function applyStanceSprintConfig(character, actor, stance)
+    local stances     = actor and actor.Config and actor.Config.Stances
+    local stanceConfig = stances and stances[stance]
+    local sprintConfig = stanceConfig and stanceConfig.SprintConfig
+    if not sprintConfig then return end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid.WalkSpeed = sprintConfig.WalkSpeed
+    end
+    character:SetAttribute("DefaultWalkSpeed", sprintConfig.WalkSpeed)
+    character:SetAttribute("SprintSpeed",      sprintConfig.SprintSpeed)
+    character:SetAttribute("MaxStamina", sprintConfig.MaxStamina or sprintConfig.Stamina)
+end
+
+-- ── Lifecycle ─────────────────────────────────────────────────────────────
+function Behavior:Init(character, actor)
+    if RunService:IsServer() then
+        -- Set the initial stance and apply its sprint stats
+        actor.YourSurvivorStance = "Aggressive"
+        character:SetAttribute("YourSurvivorStance", "Aggressive")
+        applyStanceSprintConfig(character, actor, "Aggressive")
+
+        -- Keep actor state in sync whenever the client changes stance
+        character:GetAttributeChangedSignal("YourSurvivorStance"):Connect(function()
+            actor.YourSurvivorStance = character:GetAttribute("YourSurvivorStance")
+                or actor.YourSurvivorStance
+            applyStanceSprintConfig(character, actor, actor.YourSurvivorStance)
+        end)
+    end
+end
+
+function Behavior:BindCharacter(character, maid, actor)
+    if not RunService:IsClient() then return end
+
+    -- Use a Maid so connections are cleaned up when the character is removed
+    if type(maid) ~= "table" or type(maid.Give) ~= "function" then
+        maid = Maid.new()
+        maid:Give(character.AncestryChanged:Connect(function(_, parent)
+            if not parent then maid:Destroy() end
+        end))
+    end
+
+    maid:Give(character:GetAttributeChangedSignal("YourSurvivorStance"):Connect(function()
+        -- Re-sync animations and ability slot visibility here
+    end))
+
+    maid:Give(StanceEvent.OnClientEvent:Connect(function(eventCharacter, stance)
+        if eventCharacter == character then
+            -- Apply stance-specific sprint config and animations on the client
+            applyStanceSprintConfig(character, actor, stance)
+        end
+    end))
+end
+
+function Behavior:BindActorUi(actor)
+    -- Sync HUD ability slot visibility to the current stance (client-only)
+end
+
+return Behavior
+```
+
+<Note>
+  `Behavior.ActorDefaults` entries are shallow-copied onto the actor at spawn,
+  so always use primitive types (numbers, booleans, `nil`) or tables you intend
+  to share by reference. If you need per-activation state, use a token counter
+  (like `KaneAxeSwingToken`) rather than a boolean so rapid re-activations
+  don't corrupt each other.
+</Note>
+
+### Write a Server Ability (Server.luau)
+
+Survivor ability Server scripts follow the same contract as killer abilities — export a table with `Init(character, actor)` and optionally `CanUse(character, actor)` and `OnCancel(character, actor)`. The `CanUse` method is called before `Init` to gate the ability behind a condition (e.g. stance check).
+
+The example below mirrors the Kane AxeSwing pattern: token-guarded, hitbox + lunge, stun on hit, cooldown from Config.
+
+```luau
+-- ReplicatedStorage/Systems/Characters/Survivors/YourSurvivorName/Abilities/AxeSwing/Server.luau
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local AbilityManager = require(ReplicatedStorage.Systems.Gameplay.ClientManagers.AbilityManager)
+local Hitbox         = require(ReplicatedStorage.Systems.Gameplay.ClientManagers.HitboxManager)
+local StatusEffects  = require(ReplicatedStorage.Systems.Gameplay.StatusEffects)
+local Util           = require(ReplicatedStorage.Modules.Utility.Util)
+local ActorHandler   = require(game.ServerScriptService.Modules.Handlers.ActorHandler)
+
+local AxeSwing = {}
+
+-- Gate: ability only activates when the actor is in the correct stance
+function AxeSwing:CanUse(character, actor)
+    return actor.YourSurvivorStance == "Aggressive"
+        and character:GetAttribute("YourSurvivorAxeSwingActive") ~= true
+end
+
+function AxeSwing:Init(character, actor)
+    local config = actor.Config.AbilityInfo.AxeSwing
+    local root   = character.HumanoidRootPart
+
+    -- Increment the token to invalidate any previous activation mid-flight
+    actor.YourSurvivorAxeSwingToken = (actor.YourSurvivorAxeSwingToken or 0) + 1
+    local token = actor.YourSurvivorAxeSwingToken
+    character:SetAttribute("YourSurvivorAxeSwingActive", true)
+
+    -- Lock out other abilities for the duration of the swing
+    AbilityManager.Abilities:LockAbilities(actor, {
+        Duration = config.VisibleTime,
+    })
+
+    -- Cancel any carry-over state from a previous interrupted activation
+    if actor.YourSurvivorAxeHitbox then
+        actor.YourSurvivorAxeHitbox:DestroyAll()
+        actor.YourSurvivorAxeHitbox = nil
+    end
+
+    -- Spawn the hitbox after the wind-up delay
+    task.delay(config.HitboxSpawnDelay, function()
+        if actor.YourSurvivorAxeSwingToken ~= token then return end
+        if not (character.Parent and root.Parent) then return end
+
+        local axeHitbox = Hitbox.new({
+            Owner    = character,
+            Blacklist = { character },
+            Part     = root,
+            Offset   = config.HitboxOffset,
+            Size     = config.HitboxSize,
+            Amount   = config.HitboxAmount,
+            Delay    = config.HitboxDelay,
+            Lifetime = config.HitboxLifetime,
+            Damage   = config.Damage,
+            HitType  = "StopOnHit",
+            HitOnce  = true,
+        })
+
+        axeHitbox.HumanoidTouched:Connect(function(_, targetCharacter)
+            if actor.YourSurvivorAxeSwingToken ~= token then return end
+            -- Survivors attack killers, so filter for ActorType == "Killer"
+            if not (targetCharacter and targetCharacter:GetAttribute("ActorType") == "Killer") then
+                return
+            end
+
+            -- Apply a stun status to the killer
+            StatusEffects:GiveStatus(targetCharacter, {
+                Name  = "Stunned",
+                Time  = config.StunTime,
+                Level = 1,
+            })
+            Util:ConfirmHit(targetCharacter)
+
+            -- Award a reward point for the hit
+            ActorHandler:AwardActorReward(actor.Player, {
+                Ability    = "AxeSwing",
+                ActionVerb = "Stunned Killer",
+                Category   = "Offensive",
+            })
+        end)
+
+        actor.YourSurvivorAxeHitbox = axeHitbox
+        axeHitbox:CreateHitbox()
+    end)
+
+    -- Clean up after the visible window expires
+    task.delay(config.VisibleTime, function()
+        if actor.YourSurvivorAxeSwingToken ~= token then return end
+        character:SetAttribute("YourSurvivorAxeSwingActive", nil)
+        actor.YourSurvivorAxeHitbox = nil
+    end)
+
+    AbilityManager.Abilities:GiveCooldown(actor, "AxeSwing", config.Cooldown, actor.Player)
+end
+
+function AxeSwing:OnCancel(character, actor)
+    if actor then
+        actor.YourSurvivorAxeSwingToken = (actor.YourSurvivorAxeSwingToken or 0) + 1
+        if actor.YourSurvivorAxeHitbox then
+            actor.YourSurvivorAxeHitbox:DestroyAll()
+            actor.YourSurvivorAxeHitbox = nil
+        end
+    end
+    if character and character.Parent then
+        character:SetAttribute("YourSurvivorAxeSwingActive", nil)
+    end
+    AbilityManager.Abilities:UnlockAbilities(actor)
+end
+
+return AxeSwing
+```
+
+### Write a Client Ability (Client.luau)
+
+The client script runs on the owning player's machine and handles immediate visual feedback. For Kane's AxeSwing the client script is intentionally minimal — it plays the swing animation so the local player sees it instantly without waiting for a server round-trip.
+
+```luau
+-- ReplicatedStorage/Systems/Characters/Survivors/YourSurvivorName/Abilities/AxeSwing/Client.luau
+
+local AxeSwing = {}
+
+function AxeSwing:Init(_character, actor)
+    -- actor.Animations is pre-loaded from Config.Animations by the ability manager
+    local animation = actor.Animations.Attacks.AxeSwing
+    animation.Priority = Enum.AnimationPriority.Action4
+    animation:Play(actor.Config.AnimationBlendTime, 1, 1)
+end
+
+return AxeSwing
+```
+
+<Tip>
+  Keep Client scripts focused on presentation only. Never apply damage or change
+  gameplay state client-side. All authoritative changes must happen in the
+  corresponding `Server.luau` file.
+</Tip>
+
+### Understanding Passive-Style Abilities
+
+Survivor abilities with a `Mode` field in `AbilityInfo` behave as **stance-locked** abilities: they are hidden in the HUD and their `CanUse` returns `false` when the actor is in the wrong stance. This is how Kane's `Crouch` (Agile-only) and `AxeSwing` (Aggressive-only) coexist on the same character.
+
+There is no separate "passive" module type — a passive effect is simply an ability whose Server script applies a persistent status or attribute change on `Init` and clears it on `OnCancel`. The Manager's `BindCharacter` is the right place for effects that must persist across ability activations (e.g. always-on stat bonuses triggered when the stance is set).
+
+### Auto-Discovery — No Manual Registration Required
+
+`Characters.luau` calls `load_character_folder` at startup and registers your survivor automatically:
+
+```luau
+-- ReplicatedStorage/Modules/Data/Characters.luau (excerpt — read-only reference)
+
+Characters.Survivors = load_character_folder(
+    charactersRoot:WaitForChild("Survivors")
+)
+```
+
+Your survivor appears in `Characters.Survivors["YourSurvivorName"]` once the folder and a valid `Config.luau` exist.
+
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="Adding a Killer" icon="skull" href="/guide/adding-a-killer">
+    See the parallel guide for killers — higher health pool, chase music config,
+    and the nested Config/init.luau layout.
+  </Card>
+  <Card title="Adding a Gamemode" icon="gamepad" href="/guide/adding-a-gamemode">
+    Use ApplyActorModifiers to override MaxHealth, SprintConfig, and more
+    for survivors in custom gamemodes.
+  </Card>
+</CardGroup>

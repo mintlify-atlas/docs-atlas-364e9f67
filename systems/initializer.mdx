@@ -1,0 +1,188 @@
+---
+title: "Initializer: Bulk Module Loader with Lifecycle Hooks"
+sidebarTitle: Initializer
+description: "The Initializer module bulk-requires ModuleScript lists and calls Init and Start lifecycle methods in deterministic order with error tracking."
+---
+
+The Initializer module provides a structured way to bulk-load groups of `ModuleScript` instances and invoke standard lifecycle methods on each of them in a predictable, error-tolerant order. Rather than scattering individual `require` calls across server and client loader scripts, you pass a flat list of modules to `Initializer:LoadModules` and let it handle the require pass, the `:Init()` pass, and the optional `:Start()` pass. Errors in any phase are captured per-module so a single broken module never prevents the rest from loading.
+
+<Note>
+  Initializer is a plain table — not a class instantiated with `.new()`. All state (`Loaded`, `CompileCount`, `SlowModules`, `Errors`) lives directly on the module table. Call `Initializer:Reset()` before each `LoadModules` call if you need to reuse the same instance with a fresh slate (as the server loader does).
+</Note>
+
+---
+
+## Properties
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `Loaded` | `boolean` | `false` | Set to `true` after `LoadModules` completes |
+| `CompileCount` | `number` | `0` | Total number of `require` attempts made |
+| `SlowModules` | `{ {path: string, duration: number} }` | `{}` | Modules that exceeded `CompileThreshold` seconds to require |
+| `Errors` | `{ {kind: string, source: ModuleScript, error: string} }` | `{}` | All errors captured during require, init, and start phases |
+| `CompileThreshold` | `number` | `1` | Default seconds threshold for flagging slow modules (overridable per-call) |
+
+---
+
+## Methods
+
+### `Initializer:LoadModules(moduleScripts, bucketName, options)`
+
+The primary entry point. Iterates `moduleScripts`, requires each one (skipping non-`ModuleScript` instances and those with a `NoInitializing` attribute), then calls `:Init()` on all successfully loaded modules, then calls `:Start()` on those that qualify.
+
+<ParamField path="moduleScripts" type="{ Instance }">
+  An ordered array of instances to load. Non-`ModuleScript` entries are silently skipped. A `ModuleScript` with a `NoInitializing` attribute set to any truthy value is also skipped entirely.
+</ParamField>
+
+<ParamField path="bucketName" type="string" default="Modules">
+  The key under which loaded module results are stored on the Initializer table (e.g. `Initializer.ServerSystems`). This lets you hold references to all loaded modules for debugging.
+</ParamField>
+
+<ParamField path="options" type="table" default="{}">
+  Optional configuration table. All fields are optional.
+</ParamField>
+
+<ParamField path="options.CallInit" type="boolean" default="true">
+  When `true` (the default), Initializer calls `:Init()` on each successfully required module after the full require pass completes. Set to `false` to skip init entirely.
+</ParamField>
+
+<ParamField path="options.CallStart" type="boolean" default="false">
+  When `true`, Initializer calls `:Start()` on each module after the full init pass. A module may also set `NoClientStart = true` on itself to skip `:Start()` when running on the client, even if `CallStart` is globally enabled.
+</ParamField>
+
+<ParamField path="options.OnError" type="(kind: string, source: ModuleScript, err: string) -> ()" default="nil">
+  Called synchronously whenever an error is captured. `kind` is one of `"require"`, `"init"`, or `"start"`. Use this to push loader errors to a diagnostics remote or log them centrally.
+
+  ```luau
+  OnError = function(kind, moduleScript, err)
+      warn("[Server Loader] failed to " .. kind, moduleScript:GetFullName(), err)
+  end
+  ```
+</ParamField>
+
+<ParamField path="options.CompileThreshold" type="number" default="Initializer.CompileThreshold">
+  Overrides the default 1-second threshold for this specific load call. Modules that take longer than this value to `require` are added to `Initializer.SlowModules`.
+</ParamField>
+
+---
+
+### `Initializer:Reset()`
+
+Resets `Loaded`, `CompileCount`, `SlowModules`, and `Errors` back to their initial values. Called by the server and client loader scripts before each `LoadModules` invocation so metrics from a previous boot cycle don't accumulate.
+
+```luau
+Initializer:Reset()
+Initializer:LoadModules(moduleQueue, "ServerSystems", options)
+```
+
+---
+
+## Lifecycle Order
+
+<Steps>
+  <Step title="Require Pass">
+    Initializer iterates `moduleScripts` in order. For each `ModuleScript` without a `NoInitializing` attribute it calls `pcall(require, moduleScript)`. Successful results are stored in `Initializer[bucketName]` keyed by `moduleScript.Name`. Failed requires are captured in `Initializer.Errors` and reported via `options.OnError`.
+
+    The wall-clock duration of each require is measured. If it exceeds `options.CompileThreshold` (or `Initializer.CompileThreshold`) the entry is pushed to `Initializer.SlowModules`.
+  </Step>
+
+  <Step title="Init Pass">
+    After all modules are required, Initializer iterates the successfully-loaded list and calls `:Init()` on each module that exposes it as a function. This pass only runs when `options.CallInit ~= false`. Errors are captured per-module and reported via `options.OnError`.
+
+    The entire require pass completes before any `:Init()` is called, which means every module can safely require siblings at the top level and have them already present in the registry.
+  </Step>
+
+  <Step title="Start Pass">
+    Only runs when `options.CallStart == true`. Iterates the loaded list and calls `:Start()` on each qualifying module. A module is skipped if it does not expose `:Start()` as a function, or if the code is running on the client and the module has `NoClientStart = true`.
+
+    Errors are captured per-module and do not halt the pass for remaining modules.
+  </Step>
+</Steps>
+
+---
+
+## Server Loader Example
+
+The following is how `Server.server.luau` uses Initializer to boot the full server framework:
+
+```luau
+local Initializer = require(ReplicatedStorage.Initializer)
+
+-- Build an ordered module queue
+local moduleQueue = {}
+local function queueModule(moduleScript)
+    if not (moduleScript and moduleScript:IsA("ModuleScript")) then return end
+    if queuedModules[moduleScript] then return end
+    queuedModules[moduleScript] = true
+    table.insert(moduleQueue, moduleScript)
+end
+
+-- DeltaRegistry must be first so all events are declared before handlers init
+queueModule(infrastructure:FindFirstChild("DeltaRegistry"))
+for _, child in ipairs(handlers:GetChildren())      do queueModule(child) end
+for _, child in ipairs(infrastructure:GetChildren()) do queueModule(child) end
+for _, child in ipairs(gameplay:GetChildren())       do queueModule(child) end
+
+-- Reset then load
+Initializer:Reset()
+Initializer:LoadModules(moduleQueue, "ServerSystems", {
+    CallInit          = true,
+    CallStart         = false,
+    CompileThreshold  = 1,
+    OnError           = function(kind, moduleScript, err)
+        warn("[Server Loader] failed to " .. kind, moduleScript:GetFullName(), err)
+        pushLoaderError(string.format(
+            "[server %s] %s :: %s", kind, moduleScript:GetFullName(), tostring(err)
+        ))
+    end,
+})
+
+-- Inspect results
+print("Loaded", Initializer.CompileCount, "modules")
+for _, entry in ipairs(Initializer.SlowModules) do
+    print("Slow module:", entry.path, string.format("(%.2fs)", entry.duration))
+end
+```
+
+---
+
+## Skipping Modules
+
+<Accordion title="NoInitializing attribute">
+  Add a `NoInitializing` attribute (any truthy value) directly to a `ModuleScript` instance in Studio to have Initializer skip it completely during the require pass. This is useful for modules that should only be loaded on demand, or that have side effects you want to defer.
+</Accordion>
+
+<Accordion title="NoClientStart flag">
+  A module can set `NoClientStart = true` at the top level of its returned table to opt out of the `:Start()` call when the loader runs on the client, even when `options.CallStart` is `true`. Server-side loaders that pass `CallStart = false` are not affected.
+
+  ```luau
+  local MyModule = {}
+  MyModule.NoClientStart = true   -- :Start() will not be called on the client
+
+  function MyModule:Init()
+      -- runs everywhere
+  end
+
+  function MyModule:Start()
+      -- only runs on the server
+  end
+
+  return MyModule
+  ```
+</Accordion>
+
+---
+
+## Error Entries
+
+Each entry in `Initializer.Errors` is a table with three fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `kind` | `"require" \| "init" \| "start"` | Which lifecycle phase failed |
+| `source` | `ModuleScript` | The module that produced the error |
+| `error` | `string` | The error message from `pcall` |
+
+<Warning>
+  Initializer uses `pcall` around every lifecycle call, so a crashing module will never halt the loader. Always inspect `Initializer.Errors` after `LoadModules` returns, or provide an `options.OnError` callback to surface failures in real time.
+</Warning>

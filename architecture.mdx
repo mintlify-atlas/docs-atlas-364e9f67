@@ -1,0 +1,362 @@
+---
+title: "Shattered Reality Codebase Architecture and Layout Guide"
+sidebarTitle: "Architecture"
+description: "A complete map of Shattered Reality's Roblox service hierarchy, the Initializer module lifecycle, and the server and client bootstrap sequences."
+---
+
+Understanding Shattered Reality's architecture means understanding two things: which Roblox service each piece of code lives in, and how the custom `Initializer` module sequences every module's startup. This page covers both in detail and ends with a full directory tree so you can orient yourself before exploring any subsystem.
+
+## Roblox Service Hierarchy
+
+Roblox enforces strict boundaries about which services run server code, which replicate to clients, and which live only on the client. Shattered Reality maps its code onto those boundaries deliberately.
+
+| Service | Role in Shattered Reality |
+|---|---|
+| `ReplicatedStorage` | Shared modules, the `Initializer`, DeltaNetwork, all `Systems/`, shared `Assets/`, third-party `Packages/` |
+| `ServerScriptService` | Server entry point (`Server.server.luau`) and all server-only modules under `Modules/` |
+| `ServerStorage` | Server-side assets (e.g., testing assets loaded by `loadTestingAssets()`) |
+| `StarterPlayerScripts` | Client entry point (`Client.local.luau`) and client-side modules |
+| `StarterCharacterScripts` | Per-character scripts that re-run on each respawn |
+| `ReplicatedFirst` | Assets and scripts that must be available before the game loads |
+
+<Note>
+  The `Forsaken/` directory found at the repo root is an archived, legacy iteration of the project. None of its code is loaded by the live bootstrap. Do not add references to it from new modules.
+</Note>
+
+## Directory Tree
+
+The tree below shows every relevant folder at the top two levels of depth. Files ending in `.server.luau` run only on the server; `.local.luau` runs only on a specific client; plain `.luau` modules are `require`-able from wherever they are parented.
+
+```text
+SRNEW/
+├── ReplicatedStorage/
+│   ├── Initializer.luau              ← shared module lifecycle manager
+│   ├── Assets/                       ← shared visual assets
+│   ├── Modules/
+│   │   ├── Core/                     ← foundational utilities
+│   │   ├── Data/                     ← data helpers
+│   │   ├── Network/
+│   │   │   └── DeltaNetwork/         ← typed remote singleton (init.luau + submodules)
+│   │   │       ├── Bootstrap.luau
+│   │   │       ├── Maid.luau
+│   │   │       ├── Policies.luau
+│   │   │       └── Validation.luau
+│   │   ├── UI/                       ← shared UI utilities (e.g. Notifications)
+│   │   └── Utility/                  ← misc helpers (e.g. Ragdoll)
+│   ├── Packages/
+│   │   ├── ProfileStore.luau         ← data persistence
+│   │   ├── Signal.luau / LemonSignal.luau
+│   │   ├── Trove.luau
+│   │   ├── Spring.luau
+│   │   ├── Animation.luau / Smart_Animation.luau
+│   │   ├── R6IK.luau
+│   │   ├── SimplePath.luau
+│   │   └── Icon/
+│   └── Systems/
+│       ├── Characters/
+│       │   ├── Killers/              ← per-Killer character modules
+│       │   └── Survivors/            ← per-Survivor character modules
+│       ├── Gameplay/
+│       │   ├── ClientManagers/       ← client-side gameplay managers
+│       │   │   ├── AbilityManager/
+│       │   │   ├── ActorManager/
+│       │   │   ├── ActorNetwork.luau
+│       │   │   ├── CutsceneManager.luau
+│       │   │   ├── FootstepsManager.luau
+│       │   │   ├── HealthManager.luau
+│       │   │   ├── HitboxManager/
+│       │   │   ├── HitIndicatorManager.luau
+│       │   │   ├── LeaderboardManager.luau
+│       │   │   ├── LoadingManager.luau
+│       │   │   ├── MultiplierManager.luau
+│       │   │   ├── RoundManager/
+│       │   │   ├── SpectateManager/
+│       │   │   ├── SprintManager/
+│       │   │   ├── StatusManager.luau
+│       │   │   ├── SurvivorHighlights/
+│       │   │   ├── ThemesManager.luau
+│       │   │   ├── UiRuntimeManager.luau
+│       │   │   └── VFXManager.luau
+│       │   ├── BezierProjectile.luau
+│       │   └── StatusEffects/        ← individual status effect definitions
+│       └── Player/                   ← per-player systems (camera, chat, UI menus…)
+│
+├── ServerScriptService/
+│   ├── Server.server.luau            ← server entry point
+│   └── Modules/
+│       ├── Handlers/                 ← request/event handler modules
+│       │   ├── ActorHandler/
+│       │   ├── ActorRewards.luau
+│       │   ├── ChatCommandHandler.luau
+│       │   ├── DataHandler.luau
+│       │   ├── DialogueHandler.luau
+│       │   ├── EmoteHandler.luau
+│       │   ├── FootstepsHandler.luau
+│       │   ├── ModPanelHandler.luau
+│       │   ├── PlayerHandler.luau
+│       │   ├── PointsHandler.luau
+│       │   ├── ProjectileHandler.luau
+│       │   ├── RoundHandler/
+│       │   ├── ServerIdentityHandler.luau
+│       │   ├── VoiceEffectHandler.luau
+│       │   └── WebhookHandler.luau
+│       ├── Infrastructure/           ← cross-cutting server concerns
+│       │   ├── AdminActions.luau
+│       │   ├── Anticheat/
+│       │   ├── ClientAssets.luau
+│       │   ├── Commands/
+│       │   ├── DeltaRegistry.luau    ← declares all Delta remotes
+│       │   └── SoftShutdown.luau
+│       └── Gameplay/
+│           └── Combat/               ← server-side combat logic
+│
+├── StarterPlayerScripts/
+│   ├── Client.local.luau             ← client entry point
+│   ├── Modules/                      ← client-only modules
+│   ├── CustomShiftLock/
+│   └── PlayerModule/                 ← Roblox default player module (controls)
+│
+└── ServerStorage/
+    └── Assets/                       ← server-side assets (testing, etc.)
+```
+
+## The Initializer Module
+
+`ReplicatedStorage/Initializer.luau` is the shared lifecycle engine used by both the server and client bootstraps. It owns three properties that callers read after loading:
+
+<ParamField path="Initializer.CompileCount" type="number">
+  The total number of `ModuleScript` instances that were passed to `LoadModules` and successfully `require`d.
+</ParamField>
+
+<ParamField path="Initializer.SlowModules" type="{ { path: string, duration: number } }">
+  A list of modules whose `require` call exceeded `CompileThreshold` seconds. Each entry contains the full instance path and elapsed time.
+</ParamField>
+
+<ParamField path="Initializer.Errors" type="{ { kind: string, source: ModuleScript, error: string } }">
+  All errors caught during the require, Init, and Start phases. `kind` is one of `"require"`, `"init"`, or `"start"`.
+</ParamField>
+
+### `Initializer:LoadModules(moduleScripts, bucketName, options)`
+
+<ParamField path="moduleScripts" type="{ ModuleScript }" required>
+  An ordered array of `ModuleScript` instances to load. Modules with the `NoInitializing` attribute set to `true` are silently skipped.
+</ParamField>
+
+<ParamField path="bucketName" type="string" required>
+  A key under which all successfully loaded modules are indexed on the `Initializer` table (e.g., `"ServerSystems"` or `"ClientSystems"`). Use this to look up a loaded module by name later: `Initializer.ServerSystems.DataHandler`.
+</ParamField>
+
+<ParamField path="options.CallInit" type="boolean" default="true">
+  When `true` (the default), calls `module:Init()` on every successfully required module after all modules have been required.
+</ParamField>
+
+<ParamField path="options.CallStart" type="boolean" default="false">
+  When `true`, calls `module:Start()` after `Init`. On the client, modules with `NoClientStart = true` are skipped during this phase.
+</ParamField>
+
+<ParamField path="options.CompileThreshold" type="number" default="1">
+  Seconds. Any module whose `require` exceeds this value is appended to `Initializer.SlowModules`.
+</ParamField>
+
+<ParamField path="options.OnError" type="(kind: string, moduleScript: ModuleScript, err: string) -> ()" >
+  Optional callback invoked whenever any phase (require, Init, or Start) throws an error. Used by both bootstraps to surface errors to a RemoteEvent (`LoaderErrorNotice`) so developers in-game see a notification.
+</ParamField>
+
+<Tip>
+  Call `Initializer:Reset()` before each `LoadModules` invocation if the same Initializer object is being reused (both bootstraps do this). `Reset()` clears `CompileCount`, `SlowModules`, and `Errors` and sets `Loaded = false`.
+</Tip>
+
+## Server Startup Sequence
+
+`ServerScriptService/Server.server.luau` is the single server entry point. It runs once when the server starts and never yields after the initial compile phase.
+
+<Steps>
+  <Step title="Resolve service references and require Initializer">
+    The script grabs `ReplicatedStorage`, `ServerStorage`, and its own `script.Parent.Modules` folder, then immediately `require`s `ReplicatedStorage.Initializer`. No module loading happens yet — this just makes the Initializer available.
+
+    ```luau
+    local Initializer = require(ReplicatedStorage.Initializer)
+    ```
+  </Step>
+
+  <Step title="Load testing assets (Studio only)">
+    If the workspace attribute `Testing` is `true`, the server parents `ServerStorage/Assets/Random/StudioAssets` into `workspace` under the name `"StudioAssets"`. This is a no-op on live servers.
+
+    ```luau
+    -- workspace:GetAttribute("Testing") must be true for this to run
+    loadTestingAssets()
+    ```
+  </Step>
+
+  <Step title="Build the module queue">
+    The server constructs an ordered list of `ModuleScript` instances to load. Order matters: `DeltaRegistry` is always first (so all Delta remotes are declared before any handler tries to use them), followed by the flat children of `Handlers`, then `Infrastructure`, then `Gameplay`. Two gameplay submodules — `Combat/Clashing`, `Roles/KillerSelector`, and `Roles/SurvivorSelector` — are appended explicitly at the end.
+
+    ```luau
+    local infrastructure = Modules:FindFirstChild("Infrastructure")
+    local gameplay       = Modules:FindFirstChild("Gameplay")
+    local handlers       = Modules:FindFirstChild("Handlers")
+
+    queuePath(infrastructure, {"DeltaRegistry"})   -- must be first
+    queueDirectModules(handlers)
+    queueDirectModules(infrastructure)
+    queueDirectModules(gameplay)
+    queuePath(gameplay, {"Combat", "Clashing"})
+    queuePath(gameplay, {"Roles", "KillerSelector"})
+    queuePath(gameplay, {"Roles", "SurvivorSelector"})
+    ```
+  </Step>
+
+  <Step title="Set workspace attributes and reset Initializer">
+    Two workspace attributes are written before loading begins so that any module that checks them during `Init` sees a consistent value. `ServerLoaded` is set to `false` here and flipped to `true` only after compile completes.
+
+    ```luau
+    workspace:SetAttribute("IsPrivateServer", game.PrivateServerId ~= "" or game.PrivateServerOwnerId ~= 0)
+    workspace:SetAttribute("ServerLoaded", false)
+    Initializer:Reset()
+    ```
+  </Step>
+
+  <Step title="Run Initializer:LoadModules — require and Init phases">
+    The server calls `LoadModules` with `CallInit = true` and `CallStart = false`. This means every module is `require`d, then every module's `Init` method is called. `Start` is intentionally not called by the server bootstrap — server modules must complete all setup within `Init`.
+
+    ```luau
+    Initializer:LoadModules(moduleQueue, "ServerSystems", {
+        CallInit           = true,
+        CallStart          = false,
+        CompileThreshold   = compile_threshold, -- 1 second
+        OnError            = function(kind, moduleScript, err)
+            warn("[Server Loader] failed to " .. kind, moduleScript:GetFullName(), err)
+            pushLoaderError(string.format(
+                "[server %s] %s :: %s", kind, moduleScript:GetFullName(), tostring(err)
+            ))
+        end,
+    })
+    ```
+
+    <Warning>
+      Server modules that depend on one another must tolerate being `Init`-called in the order they were queued. Do not assume another module has already called `Init` inside your own `Init`. Use `Start` (client-side) or cross-module references via `Initializer.ServerSystems` after the load phase if you need that guarantee.
+    </Warning>
+  </Step>
+
+  <Step title="Record slow modules and print startup banner">
+    After `LoadModules` returns, the script copies `Initializer.SlowModules` into its local compile report and calls `report_compile`. The banner (the SR ASCII art) is printed to `TestService` with compile time, module count, Roblox version, and branch (STUDIO vs LIVE).
+
+    ```luau
+    compile_count = Initializer.CompileCount
+    record_initializer_slow_modules()
+    report_compile("ShatteredCode Server Framework")
+    ```
+  </Step>
+
+  <Step title="Mark server as loaded and relay errors to joining players">
+    `workspace:SetAttribute("ServerLoaded", true)` is set. The client bootstrap polls this attribute and will not proceed until it is `true`. Any loader errors accumulated in `loaderErrors` are fired to each new player who joins via `LoaderErrorNotice` RemoteEvent.
+
+    ```luau
+    workspace:SetAttribute("ServerLoaded", true)
+
+    Players.PlayerAdded:Connect(function(player)
+        for _, message in ipairs(loaderErrors) do
+            remote:FireClient(player, message)
+        end
+    end)
+    ```
+  </Step>
+</Steps>
+
+## Client Startup Sequence
+
+`StarterPlayerScripts/Client.local.luau` mirrors the server sequence but has additional responsibilities: it must bootstrap the UI, gate itself on the server being ready, and call both `Init` and `Start` on every client module.
+
+<Steps>
+  <Step title="Play join loading screen immediately">
+    Before any module loading begins, `LoadingManager:PlayJoinLoadingScreen(true)` is called so the player sees a loading state while the client compiles.
+  </Step>
+
+  <Step title="Pre-populate UI frames">
+    Several UI frames (`HealthFrame`, `HotBarFrame`, `ButtonsFrame`, `CashFrame`, `LeaderboardFrame`) are cloned from their source locations in `GameplayClientManagers` and parented into `PlayerGui/MainUI`. This happens before the `ServerLoaded` gate so that UI is ready by the time modules start.
+  </Step>
+
+  <Step title="Wait for game loaded and ServerLoaded attribute">
+    The client spins until `game:IsLoaded()` is true and `workspace:GetAttribute("ServerLoaded") == true`. This ensures no client module tries to call server-side APIs before the server has finished its own Init phase.
+
+    ```luau
+    if not game:IsLoaded() then
+        game.Loaded:Wait()
+    end
+    while workspace:GetAttribute("ServerLoaded") ~= true do
+        task.wait(0.05)
+    end
+    ```
+  </Step>
+
+  <Step title="Require standalone pre-init modules">
+    A handful of modules that need early availability — `ModPanel`, `Settings`, `Notifications`, `ChatTags`, `DisableChatWhenIngame` — are required and have `Init` called on them individually before the bulk loader runs.
+  </Step>
+
+  <Step title="Build and run the client module queue">
+    Client modules are queued in two passes. First, a set of explicitly listed systems is queued (`GetClientPosition`, `Ragdoll`, `HeadLook`, `DynamicCamera`, player UI modules, and so on). Second, `ClientManagers` are queued in a declared priority order (`MultiplierManager`, `SprintManager`, `ActorNetwork`, `ActorManager`, `LoadingManager`, `ThemesManager`, `UiRuntimeManager`, `RoundManager`, `SpectateManager`, `StatusManager`, `HealthManager`, `FootstepsManager`, `CutsceneManager`, `DialogueManager`, `HitIndicatorManager`, `LeaderboardManager`), followed by any remaining unqueued managers. Finally, all descendants of `StarterPlayerScripts/Modules` are scanned.
+
+    The client calls `LoadModules` with **both** `CallInit = true` and `CallStart = true`, unlike the server.
+
+    ```luau
+    Initializer:LoadModules(compileModules, "ClientSystems", {
+        CallInit         = true,
+        CallStart        = true,
+        CompileThreshold = compile_threshold, -- 1 second
+        OnError          = showClientInitError,
+    })
+    ```
+  </Step>
+
+  <Step title="Stability gate, then stop loading screen">
+    After the module load, the client polls `is_client_bootstrap_ready()` — a function that checks `game:IsLoaded()`, `workspace.CurrentCamera ~= nil`, a 2-second UI warmup elapsed timer, and that all required GUI frames are present. Once the check passes for 0.35 seconds continuously, `LoadingManager:StopJoinLoadingScreen()` is called.
+  </Step>
+</Steps>
+
+## Module Lifecycle Contract
+
+Any module loaded through `Initializer:LoadModules` should follow this interface:
+
+```luau
+-- ReplicatedStorage or ServerScriptService module template
+local MyModule = {}
+
+-- Called during the Init phase. All other modules have been required
+-- by the time Init is called, so cross-module lookups are safe here.
+-- On the server, this is the only lifecycle method that runs.
+function MyModule:Init()
+
+end
+
+-- Called during the Start phase (client only, unless you set CallStart = true
+-- on the server). Use this for anything that needs other modules to have
+-- finished their own Init first.
+function MyModule:Start()
+
+end
+
+return MyModule
+```
+
+<Tip>
+  Set the `NoInitializing` attribute on a `ModuleScript` instance to `true` in Studio if you want the Initializer to skip it entirely. This is useful for modules that are `require`d lazily by other modules rather than being part of the startup sequence.
+</Tip>
+
+## DeltaRegistry — Declaring Remotes Before Handlers
+
+`ServerScriptService/Modules/Infrastructure/DeltaRegistry.luau` is always the **first** module queued in the server bootstrap (via `queuePath(infrastructure, {"DeltaRegistry"})`). Its sole job is to call `Delta(name, ...argTypes)` for every remote event and function used in the game. Because `DeltaNetwork` is a singleton (enforced by `_G.__DELTA_SINGLETON`), any subsequent module that requires DeltaNetwork and calls `Delta("SomeName")` will receive the same instance that was declared in `DeltaRegistry`, complete with its type annotations and rate-limit configuration.
+
+```luau
+-- Example pattern used in DeltaRegistry
+local Delta = require(ReplicatedStorage.Modules.Network.DeltaNetwork)
+
+Delta("PlayerDamaged", Delta.Number, Delta.String)
+    :RateLimit({ MaxCalls = 10, WindowSeconds = 1 })
+
+Delta("RequestRespawn")
+    :Response(Delta.Boolean)
+```
+
+<Warning>
+  Never declare a Delta remote inside a Handler or Gameplay module. Always declare it in `DeltaRegistry` first. If a client tries to `require` a Delta by name before the server has declared it, the remote scaffolding will be created without type information, breaking validation silently.
+</Warning>

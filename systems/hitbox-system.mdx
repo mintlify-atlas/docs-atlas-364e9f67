@@ -1,0 +1,375 @@
+---
+title: "Hitbox System: Server-Authoritative Lag-Compensated Hits"
+sidebarTitle: "Hitbox System"
+description: "The hitbox system provides server-authoritative hit detection with client-side position snapshots for lag compensation and sweep-step tunneling prevention."
+---
+
+The hitbox system is the spatial combat detection backbone of Shattered Reality. All hit registration is authoritative on the server — clients never report which targets they hit. Instead, the server rewinds each player's recorded position history to compensate for network latency when evaluating whether an ability's hitbox overlapped a target at the moment the ability fired. The system is composed of five modules that each own a distinct concern: `HitboxManager/init`, `CastSystem`, `ClientSnapshots`, `HitboxWorld`, and `Execution`.
+
+<CardGroup cols={2}>
+  <Card title="HitboxManager" icon="crosshairs">
+    Entry point. Exposes `Hitbox.new(Data)` and `Hitbox:CreateHitbox()`. Owns the bean geometry helpers and the client-CFrame sync broadcast loop.
+  </Card>
+  <Card title="CastSystem" icon="calculator">
+    Runs every registered hitbox each `Heartbeat`. Resolves the final world-space CFrame, sweeps intermediate positions to prevent tunneling, collects overlapping humanoids and objects, and dispatches to signal handlers.
+  </Card>
+  <Card title="ClientSnapshots" icon="clock-rotate-left">
+    Maintains a per-player, per-part ring buffer of CFrame + velocity snapshots uploaded by each client. The server rewinds this buffer to the moment of the ability cast when evaluating client-side positions.
+  </Card>
+  <Card title="HitboxWorld" icon="globe">
+    The world-level registry. Keeps a map of active hitboxes and drives the `Heartbeat` loop that calls `CastSystem.run` on each entry each frame.
+  </Card>
+  <Card title="Execution" icon="skull">
+    Handles cinematic execution kills. When a hitbox resolves a kill and `ExecuteOnKill = true`, `Execution:TryExecuteOnKill` checks ability config for execution animations and plays a synchronized cutscene.
+  </Card>
+  <Card title="DeltaRegistry" icon="network-wired">
+    Pre-declares the hitbox Delta events (`HitboxTouched`, `VisualizeHitbox`, `CharacterBeanHitboxState`, `GetClientCFrame`, `SetClientCFrame`) so both sides receive the same typed instances.
+  </Card>
+</CardGroup>
+
+---
+
+## Architecture Overview
+
+```luau
+-- Server flow (per Heartbeat, per active hitbox)
+HitboxWorld._tick(dt)
+  → CastSystem.run(hitbox, dt)
+      → CastSystem.resolveCFrame(hitbox, dt)
+          → CastSystem.resolveServerCFrame(hitbox, dt)   -- physics prediction
+          → CastSystem.resolveClientCFrame(hitbox, dt)   -- snapshot rewind
+      → CastSystem.sweepSteps(hitbox, prevCF, boxCF)     -- tunneling prevention
+      → CastSystem.collectHits(hitbox, boxCF, ...)       -- workspace overlap query
+      → CastSystem.dispatchHumanoids(hitbox, humanoidSet)
+          → hitbox.HumanoidTouched:Fire(humanoid, character)
+              → damage / knockback / execution
+```
+
+---
+
+## Creating a Hitbox — `Hitbox.new(Data)`
+
+Construct a hitbox by passing a configuration table to `Hitbox.new`. The hitbox is inert until `Hitbox:CreateHitbox()` is called, giving you time to connect `HumanoidTouched` and `ObjectTouched` signal handlers first.
+
+```luau
+local Hitbox = require(ReplicatedStorage.Systems.Gameplay.ClientManagers.HitboxManager)
+
+local newHitbox = Hitbox.new({
+    Owner      = Character,
+    Blacklist  = {Character},
+    Part       = Character.HumanoidRootPart,
+    Offset     = slashConfig.HitboxOffset,    -- CFrame.new(0, -1, -4)
+    Size       = slashConfig.HitboxSize,      -- Vector3.new(4.5, 6, 5.2)
+    Amount     = slashConfig.HitboxAmount,    -- 16
+    Delay      = slashConfig.HitboxDelay,     -- 0.011
+    Lifetime   = slashConfig.HitboxLifetime,  -- 0.16
+    Damage     = slashConfig.Damage,          -- 16
+    HitType    = "StopOnHit",
+    WallBlockable  = true,
+    WallBlockDamage = slashConfig.Damage,
+    ExecuteOnKill  = true,
+    UseClient      = true,
+})
+
+newHitbox.HumanoidTouched:Connect(function(humanoid, character)
+    Util:ConfirmHit(character)
+end)
+
+-- Activate after spawn delay
+task.delay(slashConfig.HitboxSpawnDelay, function()  -- 0.4 seconds
+    newHitbox:CreateHitbox()
+end)
+```
+
+---
+
+## Hitbox Config Fields
+
+<ParamField path="Owner" type="Model">
+  The character model that owns this hitbox. Used for friendly-fire checks, knockback direction resolution, and `IgnoreKillerName` auto-detection. The hitbox is destroyed automatically if `Owner.Parent` becomes `nil`.
+</ParamField>
+
+<ParamField path="Part" type="BasePart">
+  The part whose `CFrame` drives the hitbox position each frame. CastSystem reads `Part.AssemblyLinearVelocity` for physics prediction and lag-compensation snap.
+</ParamField>
+
+<ParamField path="HitboxOffset" type="CFrame">
+  CFrame offset applied on top of the resolved part CFrame before the spatial query. In the Slash ability this is `CFrame.new(0, -1, -4)` — 1 stud down and 4 studs in front of the root.
+</ParamField>
+
+<ParamField path="HitboxSize" type="Vector3">
+  Dimensions of the box used for `workspace:GetPartBoundsInBox`. For `Shape = "Circle"` or `"Radius"`, `Size` is derived from `Radius` if provided. The Slash ability uses `Vector3.new(4.5, 6, 5.2)`.
+</ParamField>
+
+<ParamField path="HitboxAmount" type="number">
+  Maximum number of cast iterations the hitbox performs before self-destroying. Each `Heartbeat` tick counts as one cast (unless `HitboxDelay` throttles it). The Slash ability uses `16`.
+</ParamField>
+
+<ParamField path="HitboxDelay" type="number">
+  Minimum seconds between consecutive casts. Acts as a per-hitbox rate limiter independent of frame rate. The Slash ability uses `0.011` seconds.
+</ParamField>
+
+<ParamField path="HitboxLifetime" type="number">
+  Wall-clock seconds after `CreateHitbox()` is called before the hitbox auto-destroys via `task.delay`. The Slash ability uses `0.16` seconds, creating a tight strike window.
+</ParamField>
+
+<ParamField path="HitboxSpawnDelay" type="number">
+  Seconds after ability activation before `CreateHitbox()` is called. Defined in the ability config and consumed by `Server.luau`. The Slash ability uses `0.4` seconds — timed to align with the animation wind-up.
+</ParamField>
+
+<ParamField path="Damage" type="number">
+  Base damage applied when `HumanoidTouched` fires. CastSystem calls `Util:GetDamageAmount` (which may apply multipliers) and then `Util:ApplyDamage`. If `nil`, no automatic damage is applied and your `HumanoidTouched` handler must apply damage manually.
+</ParamField>
+
+<ParamField path="Knockback" type="number | Vector3 | function">
+  Knockback force. A `number` applies force along `KnockbackDirection`. A `Vector3` sets both direction and magnitude. A `function` receives `(character, humanoid, ownerCharacter, hitbox)` and returns the resolved value.
+</ParamField>
+
+<ParamField path="KnockbackDuration" type="number" default="0.2">
+  Duration in seconds of the knockback impulse via `Util:ApplyForce`.
+</ParamField>
+
+<ParamField path="HitType" type="string" default="Default">
+  `"Default"` — continues hitting until `HitboxAmount` is exhausted. `"StopOnHit"` — immediately destroys the hitbox upon the first humanoid or object contact. The Slash ability uses `"StopOnHit"`.
+</ParamField>
+
+<ParamField path="HitMode" type="string" default="Humanoid">
+  `"Humanoid"` — only fire `HumanoidTouched`. `"Object"` — only fire `ObjectTouched`. `"Both"` — fire both signals.
+</ParamField>
+
+<ParamField path="UseClient" type="boolean" default="auto">
+  When `true`, CastSystem uses the client's uploaded position snapshots (via `SetClientCFrame`) for the hitbox's owning player, rewound by their network ping, instead of the raw server-side part position. Auto-detected as `true` when `Owner` is a player character and `Part` is a descendant of it.
+</ParamField>
+
+<ParamField path="ExecuteOnKill" type="boolean" default="false">
+  When `true` and the target would be killed by this hit, `Execution:TryExecuteOnKill` is attempted before applying damage. If an execution animation is found in the killer's config, the kill is handled cinematically.
+</ParamField>
+
+<ParamField path="BarrierBreaker" type="boolean" default="false">
+  When `true`, damage bypasses barrier/shield mechanics.
+</ParamField>
+
+<ParamField path="WallBlockable" type="boolean" default="false">
+  When `true`, the hitbox also queries for destructible wall objects via `ObjectTouched` and applies `WallBlockDamage` to them through the `TacticalBarrier` system.
+</ParamField>
+
+<ParamField path="CanClash" type="boolean" default="false">
+  When `true`, the hitbox participates in the clash detection system. If two clash-capable hitboxes from opposing killer and survivor characters come within combined radius range, both are cancelled and a `StartClash` event may fire.
+</ParamField>
+
+<ParamField path="HitOnce" type="boolean" default="false">
+  When `true`, each individual character can only be hit once per hitbox lifetime regardless of `HitboxAmount` or `HitboxDelay`.
+</ParamField>
+
+<ParamField path="HitCooldown" type="number" default="0">
+  When `> 0`, each character can be re-hit only after this many seconds have elapsed since the last hit on that character. Takes precedence over `HitOnce`.
+</ParamField>
+
+<ParamField path="Shape" type="string" default="Box">
+  `"Box"` — rectangular overlap via `GetPartBoundsInBox`. `"Circle"` or `"Radius"` — spherical overlap via `GetPartBoundsInRadius`. Circle hitboxes use the closest point on each overlapping part to the sphere centre for precise distance filtering.
+</ParamField>
+
+---
+
+## Shapes
+
+<Tabs>
+  <Tab title="Box (default)">
+    Uses `workspace:GetPartBoundsInBox(boxCF, hitbox.Size, hitbox.OverlapParams)`. The world-space CFrame is `resolvedPartCFrame * hitbox.Offset`. Sweep steps interpolate between the previous frame's CFrame and the current one to catch fast-moving hitboxes.
+
+    ```luau
+    Hitbox.new({
+        Size   = Vector3.new(4.5, 6, 5.2),
+        Offset = CFrame.new(0, -1, -4),
+        Shape  = "Box",   -- default, can be omitted
+        ...
+    })
+    ```
+  </Tab>
+  <Tab title="Circle / Radius">
+    Uses `workspace:GetPartBoundsInRadius(boxCF.Position, radius, hitbox.OverlapParams)`. If `Radius` is not provided, it is derived as `max(Size.X, Size.Z) * 0.5`. Circle hitboxes additionally check that each candidate's closest surface point is within the radius, preventing corner hits from large parts.
+
+    ```luau
+    Hitbox.new({
+        Shape  = "Circle",
+        Radius = 8,
+        ...
+    })
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Lag Compensation — ClientSnapshots
+
+The `SetClientCFrame` Delta event is fired by the client every frame with the `HumanoidRootPart`'s current CFrame and velocity. The server's `ClientSnapshots` module stores these in a per-player, per-part ring buffer with capacity `SNAPSHOT_CAPACITY = 40`.
+
+When CastSystem needs to evaluate a player-owned hitbox it calls `ClientSnapshots.Sample(player, part, targetTime)` with `targetTime = serverNow - ping * 0.5`. The buffer interpolates between the two bracketing samples to reconstruct the part's position at exactly that moment in the past.
+
+```luau
+-- Automatic rewind used in CastSystem.resolveClientCFrame
+local rewind    = api.getLatencyCompensation(hitbox, player)  -- clamped [MIN_CLIENT_REWIND, MaxLatencyCompensation]
+local targetTime = workspace:GetServerTimeNow() - rewind * 0.5
+local snapshot   = clientSnapshots.Sample(player, hitbox.Part, targetTime)
+```
+
+Key constants:
+
+| Constant | Value | Description |
+|---|---|---|
+| `SNAPSHOT_CAPACITY` | `40` | Maximum snapshots stored per part per player |
+| `MAX_CLIENT_REWIND` | `0.22 s` | Maximum rewind the server will honour |
+| `MIN_CLIENT_REWIND` | `0.005 s` | Minimum rewind applied even at zero measured ping |
+| `MAX_CLIENT_PREDICTION` | `0.33 s` | Maximum forward prediction window from a snapshot |
+| `MAX_CLIENT_SNAPSHOT_DRIFT` | `80 studs` | Discard snapshots that are more than 80 studs from the server part position |
+
+<Warning>
+  The server validates incoming snapshot CFrames against `MAX_CLIENT_SNAPSHOT_DRIFT`. A client attempting to teleport their hitbox part by more than 80 studs from its true server position will have that snapshot silently discarded, and the hitbox will fall back to the server-side position.
+</Warning>
+
+---
+
+## JohnDoe Slash — Complete Server Ability Example
+
+The Slash ability in `JohnDoe/Abilities/Slash/Server.luau` is the canonical example of hitbox usage:
+
+```luau
+local Hitbox    = require(ReplicatedStorage.Systems.Gameplay.ClientManagers.HitboxManager)
+local Paragon   = require(ReplicatedStorage.Systems.Gameplay.ClientManagers.AbilityManager)
+local Animations = require(ReplicatedStorage.Systems.Player.Animations)
+local Sounds    = require(ReplicatedStorage.Systems.Gameplay.StatusEffects.Sounds)
+local Util      = require(ReplicatedStorage.Modules.Utility.Util)
+
+function SlashServer:Init(Character, Actor)
+    if Character:GetAttribute("Stunned") then return end
+
+    local cancelCtx  = AbilityCancel.Start(Character, "Slash")
+    local slashConfig = Actor.Config.AbilityInfo.Slash
+    -- slashConfig.HitboxOffset   = CFrame.new(0, -1, -4)
+    -- slashConfig.HitboxSize     = Vector3.new(4.5, 6, 5.2)
+    -- slashConfig.HitboxAmount   = 16
+    -- slashConfig.HitboxDelay    = 0.011
+    -- slashConfig.HitboxLifetime = 0.16
+    -- slashConfig.HitboxSpawnDelay = 0.4
+    -- slashConfig.Damage         = 16
+
+    local newHitbox = Hitbox.new({
+        Owner          = Character,
+        Blacklist      = {Character},
+        HitType        = "StopOnHit",
+        Damage         = slashConfig.Damage,
+        WallBlockable  = true,
+        WallBlockDamage = slashConfig.Damage,
+        Part           = Character.HumanoidRootPart,
+        Offset         = slashConfig.HitboxOffset,
+        Size           = slashConfig.HitboxSize,
+        Amount         = slashConfig.HitboxAmount,
+        Delay          = slashConfig.HitboxDelay,
+        Lifetime       = slashConfig.HitboxLifetime,
+        ExecuteOnKill  = true,
+        UseClient      = true,
+    })
+
+    cancelCtx:Add(function()
+        newHitbox:DestroyAll()
+    end)
+
+    -- Play animation and SFX
+    local SlashAnim = Animations:LoadFromID(Character, {
+        Name   = "SlashAttack",
+        ID     = Actor.Config.Animations.Attacks.Slash,
+        Looped = false,
+    })
+    local SlashSFX = Sounds:LoadSound({
+        SoundId     = Actor.Config.Sounds.SlashNoise,
+        Parent      = Character.PrimaryPart,
+        DestroyOnEnd = true,
+    })
+    if SlashAnim then
+        SlashAnim.Priority = Enum.AnimationPriority.Action4
+        SlashAnim:Play(0.05, 1, 1)
+        SlashSFX:Play()
+    end
+
+    -- Hit callback
+    newHitbox.HumanoidTouched:Connect(function(_, character)
+        Util:ConfirmHit(character)
+        Util:CreateSpeedMultiplier(character, 1.45, "HitSpeedBonus", 1.1)
+
+        local hitSound = Sounds:LoadSound({
+            Name        = "SlashHit",
+            SoundId     = Actor.Config.Sounds.SlashHit,
+            Parent      = Character.HumanoidRootPart,
+            DestroyOnEnd = true,
+        })
+        hitSound:Play()
+
+        -- Ragdoll launch on kill
+        task.delay(0.05, function()
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            local hum = character:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health <= 0 then
+                local dir = Character.HumanoidRootPart.CFrame.LookVector
+                character:SetAttribute("BrokenRagdollLaunchVelocity", dir * 165 + Vector3.new(0, 75, 0))
+                character:SetAttribute("BrokenRagdollLaunchNonce", os.clock())
+            end
+        end)
+    end)
+
+    -- Give cooldown immediately, then spawn hitbox after wind-up
+    Paragon.Abilities:GiveCooldown(Actor, "Slash", nil, Actor.Player)
+
+    task.delay(slashConfig.HitboxSpawnDelay, function()
+        if cancelCtx.Cancelled or Character:GetAttribute("Stunned") then
+            cancelCtx:Complete()
+            return
+        end
+        newHitbox:CreateHitbox()
+    end)
+
+    SlashAnim.Stopped:Connect(function()
+        cancelCtx:Complete()
+    end)
+end
+```
+
+---
+
+## Execution System
+
+When a hitbox with `ExecuteOnKill = true` resolves a killing blow, `CastSystem.bindRuntimeHandlers` calls `Execution:TryExecuteOnKill` before applying damage. Execution checks:
+
+1. The owner is a killer character.
+2. The target's `Humanoid.Health` would reach `0` from this hit.
+3. Neither character has `Executing` or `ExecutionsDisabled` attributes set.
+4. The killer's `Config.Animations` contains an `Execution` table with `KillerRig` and `PlayerRig` animation IDs.
+
+If all checks pass, the execution plays synchronized animations on both characters, adds 30 seconds to the round timer, and kills the target after `KillDelay` (or when the survivor animation ends).
+
+```luau
+-- From Config/init.luau — JohnDoe execution animation IDs
+Animations = {
+    Execution = {
+        KillerRig  = asset(84637613863953),
+        PlayerRig  = asset(76976822565147),
+    },
+}
+```
+
+---
+
+## Bean Hitbox Broadcast
+
+For character-level collision detection (not ability hitboxes), the server broadcasts each player's "bean" geometry at 30 Hz via the `CharacterBeanHitboxState` Delta event. The bean is a cylinder derived from the character's root part dimensions plus humanoid hip height. Only clients with `CharacterBeanHitboxReady = true` attribute receive these packets.
+
+```luau
+-- Geometry derivation
+local diameter = math.max(3.5, math.max(rootPart.Size.X, rootPart.Size.Z) * 1.75)
+local height   = math.max(5, rootPart.Size.Y + humanoid.HipHeight * 2.5)
+local yOffset  = math.max(0.25, (height - rootPart.Size.Y) * 0.2)
+```
+
+<Tip>
+  To enable the hitbox debug visualizer for a player, set `DataHandler.DevSettings.ShowHitbox = true` in their profile. The `VisualizeHitbox` Delta event will then broadcast hitbox CFrames and sizes to that player each cast, rendered client-side as transparent boxes.
+</Tip>

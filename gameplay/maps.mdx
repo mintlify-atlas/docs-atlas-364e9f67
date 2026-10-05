@@ -1,0 +1,248 @@
+---
+title: "Maps — Selectable Maps and Config System"
+sidebarTitle: "Maps"
+description: "How selectable maps work in Shattered Reality: Config structure, per-map lighting, lifecycle hooks, objectives, variants, and the full list of 16 maps."
+---
+
+All playable maps live under `ServerStorage/Maps/SelectableMaps/`. Each entry is a folder named after the map's internal key. The `Maps` module (`RoundUtil/Maps.luau`) scans this folder at the start of every round, builds a weighted pool from the `Config.luau` of each entry, and then either honours a forced map query or picks one at random via `weightedChoice`. After selection the map template is cloned into `workspace`, its lighting is injected into `game.Lighting`, objectives are applied, and the map lifecycle callbacks are invoked.
+
+---
+
+## Selectable Maps
+
+There are **16** maps in the selectable pool. Maps with `Weight = 0` are present in the folder but excluded from random selection; they can still be loaded via `RoundUtil:ForceNextMap`.
+
+<Accordion title="View all 16 maps">
+
+| Folder Name | Display Name |
+|---|---|
+| `Banlands` | Banlands |
+| `BrandonWorks` | BrandonWorks |
+| `C00lCarnival` | C00lCarnival |
+| `CatalogHeaven` | CatalogHeaven |
+| `Courtyard` | Courtyard |
+| `DeadReception` | DeadReception |
+| `Facility` | Facility |
+| `HorrorHotel` | Horror Hotel |
+| `Insulae` | Insulae |
+| `PirateBay` | PirateBay |
+| `PizzaPlace` | PizzaPlace |
+| `PlanetVoss` | Planet Voss |
+| `Ravenrock` | Ravenrock |
+| `UltimateAssassinGrounds` | UltimateAssassinGrounds |
+| `UndergroundWar` | UndergroundWar |
+| `WorkAtAPizzaPlace` | WorkAtAPizzaPlace |
+
+</Accordion>
+
+<Note>
+Maps with `Weight = 0` (e.g. `HorrorHotel`, `Ravenrock`, `C00lCarnival`, `PlanetVoss`) are excluded from the random pool. They are development or special maps that must be forced manually. Set `Weight` to a positive integer in `Config.luau` to include a map in rotation.
+</Note>
+
+---
+
+## Folder Structure
+
+Every selectable map folder follows the same convention:
+
+```
+SelectableMaps/
+└── MyMap/
+    ├── Config.luau          -- required: metadata, audio, lifecycle hooks, objectives
+    ├── Map/                 -- required: the map Model template (cloned into workspace)
+    ├── Lighting/
+    │   ├── Properties.luau  -- optional: Lighting property overrides
+    │   └── <Instances>      -- optional: Atmosphere, ColorCorrectionEffect, etc.
+    └── <VariantName>/       -- optional: variant sub-folders (each contains its own Map/)
+```
+
+---
+
+## `Config.luau` Structure
+
+`Config.luau` returns a single table. `Maps.normalizeMapConfig` reads it and produces a normalised definition used throughout the round.
+
+```luau
+-- Example: ServerStorage/Maps/SelectableMaps/Facility/Config.luau (abridged)
+return {
+    Metadata = {
+        DisplayName = "Facility",
+        Description = "An industrial facility with sealed corridors and security checkpoints.",
+        Weight = 1,
+        -- Render = "rbxassetid://...",  -- optional thumbnail asset ID
+    },
+    Audio = {
+        ThemeID     = "rbxassetid://...", -- looped background music during the round
+        ThemeVolume = 0.5,                -- default 0.5
+        -- LMSThemeID = "rbxassetid://...", -- optional last-man-standing music
+    },
+    Lifecycle = {
+        OnCreated   = function(context) ... end, -- called after map is cloned into workspace
+        OnDestroyed = function(context) ... end, -- called when the round ends / map is removed
+    },
+    -- Objectives = { ... },  -- optional: see Objectives section below
+    -- Variants   = { Normal = 80, Bluu = 20 },  -- optional: see Variants section below
+}
+```
+
+### Normalised Config Fields
+
+After `normalizeMapConfig` runs, the definition exposes:
+
+| Field | Source | Type | Description |
+|---|---|---|---|
+| `Name` | `Metadata.Name` or folder name | `string` | Internal key used in workspace attributes. |
+| `DisplayName` | `Metadata.DisplayName` | `string` | Name shown in the HUD and webhook logs. |
+| `Description` | `Metadata.Description` | `string` | Flavour text; not currently displayed in-game. |
+| `Render` | `Metadata.Render` | `string?` | Asset ID of the map thumbnail. |
+| `Weight` | `Metadata.Weight` | `number` | Selection weight (default `1`; `0` excludes from pool). |
+| `ThemeID` | `Audio.ThemeID` | `string?` | Sound asset ID played as round music. |
+| `ThemeVolume` | `Audio.ThemeVolume` | `number` | Playback volume (default `0.5`). |
+| `LMSTheme` | `Audio.LMSThemeID` | `string?` | Separate track played during last-man-standing. |
+| `Objectives` | `raw.Objectives` | `table?` | Array of objective configs; see below. |
+| `Variants` | `raw.Variants` | `table?` | Map of variant name → weight. |
+| `OnCreated` | `Lifecycle.OnCreated` | `function?` | Lifecycle hook invoked after the map is loaded. |
+| `OnDestroyed` | `Lifecycle.OnDestroyed` | `function?` | Lifecycle hook invoked on cleanup. |
+
+---
+
+## Per-Map Lighting
+
+Map lighting is applied via two mechanisms that can coexist:
+
+### `Lighting/Properties.luau`
+
+Returns a plain table of `game.Lighting` property overrides. Passed directly to `Util:SetLightingBasedOnData`.
+
+```luau
+-- ServerStorage/Maps/SelectableMaps/Ravenrock/Lighting/Properties.luau
+return {
+    Ambient               = Color3.fromRGB(88, 75, 116),
+    ClockTime             = 15.1,
+    ExposureCompensation  = 0,
+    Brightness            = 0.15,
+}
+```
+
+Supported properties (from `Maps.ORIGINAL_LIGHTING_PROPERTIES`):
+
+`Ambient`, `Brightness`, `ClockTime`, `ColorShift_Bottom`, `ColorShift_Top`, `EnvironmentDiffuseScale`, `EnvironmentSpecularScale`, `ExposureCompensation`, `FogColor`, `FogEnd`, `FogStart`, `GeographicLatitude`, `GlobalShadows`, `OutdoorAmbient`, `ShadowSoftness`.
+
+### `Lighting/` Instance Children
+
+Any non-`ModuleScript` child of the `Lighting` folder (e.g. an `Atmosphere`, `BloomEffect`, or `ColorCorrectionEffect`) is cloned directly into `game.Lighting` when the map loads. Each cloned instance is tracked by name in `context.APPLIED_LIGHTING_CHILDREN` so that it is destroyed cleanly when the map is torn down.
+
+### Lighting Restore
+
+Before any map is loaded, `Maps.captureOriginalLightingProperties` snapshots the current `Lighting` property values. When the map ends, `Maps.restoreOriginalLighting` restores all snapshotted properties and re-clones the contents of `game.Lighting.OriginalLighting` (a folder populated at server start time with the baseline lighting children).
+
+---
+
+## Map Variants
+
+A map can declare multiple geometry variants with individual selection weights. The `Normal` variant always refers to the top-level `Map/` template.
+
+```luau
+-- C00lCarnival/Config.luau
+Variants = {
+    Normal = 80,  -- uses the root Map/ template
+    Bluu   = 20,  -- uses C00lCarnival/Bluu/Map/
+},
+```
+
+When a variant other than `Normal` is selected, the system looks for a sub-folder with that name inside the map folder and uses its `Map/` child as the template. If no `Map/` is found in the variant folder the system falls back to the base definition with a warning. The variant name is appended to the `CurrentMapDisplayName` workspace attribute as `"DisplayName / VariantName"`.
+
+---
+
+## Lifecycle Hooks
+
+`OnCreated` and `OnDestroyed` receive a `context` table:
+
+| Field | Type | Description |
+|---|---|---|
+| `Map` | `Instance` | The live map `Model` in `workspace`. |
+| `Folder` | `Instance` | The `ServerStorage` source folder. |
+| `Definition` | `table` | Full normalised definition (includes `Config`, `LightingFolder`, etc.). |
+| `Config` | `table` | Shorthand for `Definition.Config`. |
+| `OnDestroyed` | `function?` | The destroy callback stored for later invocation. |
+
+```luau
+Lifecycle = {
+    OnCreated = function(context)
+        -- Example: apply StatusEffects to characters entering a trigger zone
+        context.TouchConnection = context.Map.SomePart.Touched:Connect(function(hit)
+            local character = hit.Parent
+            if character and character:FindFirstChildOfClass("Humanoid") then
+                local StatusEffects = require(
+                    game.ReplicatedStorage.Systems.Gameplay.StatusEffects
+                )
+                StatusEffects:GiveStatus(character, {
+                    Name  = "Slowness",
+                    Level = 3,
+                    Time  = 2,
+                })
+            end
+        end)
+    end,
+    OnDestroyed = function(context)
+        if context.TouchConnection then
+            context.TouchConnection:Disconnect()
+        end
+    end,
+},
+```
+
+<Warning>
+Lifecycle callbacks run inside a `pcall`. Errors are logged via `warn` but do not abort the round. Always store connections and any cleanup state in the `context` table so that `OnDestroyed` can release them reliably.
+</Warning>
+
+---
+
+## Objectives
+
+Maps that include gameplay objectives declare them in the `Objectives` array. Each entry specifies a `Type` (the name of a `ModuleScript` in the map's `Objectives/` folder or in the template's `Objectives/` folder) plus any configuration for that objective type.
+
+```luau
+Objectives = {
+    { Type = "SetupGenerators", Count = 3, ... },
+},
+```
+
+When `applyMapObjectives` runs after cloning, it resolves each `Type` to a `ModuleScript` and calls its `Apply(map, objectiveConfig, definition)` function. If the module is missing a warning is printed and that objective is skipped.
+
+---
+
+## Spawn System
+
+Spawns are read from the map's `Spawns/` folder inside the cloned `Map` model:
+
+```
+Map/
+└── Spawns/
+    ├── Killers/    -- one or more BaseParts (any type)
+    └── Survivors/  -- one or more BaseParts (any type)
+```
+
+All `BasePart` descendants are made invisible (`Transparency = 1`) and non-collidable at load time. `CanCollide` is toggled back to `true` on intermission and `false` again at round start. Each CFrame is offset upward by `Size.Y * 0.5 + 3` to place characters above the surface. Spawn order is shuffled before assignment so players do not receive predictable positions.
+
+<Tip>
+To add more spawn variety, simply add more `BasePart` descendants inside the `Killers` or `Survivors` folders. The shuffle-and-modulo assignment ensures all spots are used evenly regardless of player count.
+</Tip>
+
+---
+
+## Forcing a Map
+
+You can lock the next round to a specific map from a server script:
+
+```luau
+local RoundUtil = require(game.ServerScriptService.Modules.Handlers.RoundHandler.RoundUtil)
+
+-- Accepts folder name or display name (case-insensitive, partial match supported)
+local entry = RoundUtil:ForceNextMap("Facility")
+if entry then
+    print("Next map forced to:", entry.Definition.Config.DisplayName)
+end
+```
+
+The forced map query is stored in `context.forcedNextMapQuery` and consumed on the next call to `Maps.Select`. Partial and case-insensitive matching is supported: `"facility"`, `"Facil"`, and `"FACILITY"` all resolve to the `Facility` folder.
