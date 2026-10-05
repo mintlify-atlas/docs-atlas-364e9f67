@@ -186,15 +186,9 @@ Compared to the Normal `Ambient` (`Color3.new(0.521569, 0.67451, 1)` — sky blu
 
 ### Add Objective Logic (Optional)
 
-If your map or variant has generator-style objectives, create an `Objectives/` subfolder containing a `SetupGenerators.luau` module. The module should return a table that the objective system reads when the map is instantiated.
+If your map has objective-based gameplay (e.g. generator repairs, tower calibration), declare an `Objectives` array in `Config.luau` and create a matching `ModuleScript` inside an `Objectives/` subfolder of your map folder. Each entry's `Type` field must match the name of a `ModuleScript` inside `Objectives/`, and that module must export an `Apply(map, objectiveConfig, definition)` function.
 
-```luau
--- ServerStorage/Maps/SelectableMaps/YourMapName/Bluu/Objectives/SetupGenerators.luau
-
-return { CommonObjective = "SetupGenerators" }
-```
-
-`RoundUtil/Maps.luau`'s `applyMapObjectives` function iterates the `Objectives` array from `Config` (if present) and calls `require(objectiveModule).Apply(map, objectiveConfig, definition)` for each entry. You can define the `Objectives` array in `Config.luau` under the root table:
+`RoundUtil/Maps.luau`'s `applyMapObjectives` function iterates the `Objectives` array from `Config` (if present) and calls `require(objectiveModule).Apply(map, objectiveConfig, definition)` for each entry.
 
 ```luau
 -- Config.luau excerpt — add an Objectives array to trigger setup modules
@@ -208,6 +202,18 @@ return {
         { Type = "SetupGenerators" },
     },
 }
+```
+
+```luau
+-- ServerStorage/Maps/SelectableMaps/YourMapName/Objectives/SetupGenerators.luau
+
+local SetupGenerators = {}
+
+function SetupGenerators.Apply(map, objectiveConfig, definition)
+    -- Initialize generator instances in the map model here
+end
+
+return SetupGenerators
 ```
 
 ### How Maps Are Loaded by the Round System

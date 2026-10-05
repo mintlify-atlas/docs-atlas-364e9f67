@@ -189,7 +189,7 @@ SRNEW/
   </Step>
 
   <Step title="Build the module queue">
-    The server constructs an ordered list of `ModuleScript` instances to load. Order matters: `DeltaRegistry` is always first (so all Delta remotes are declared before any handler tries to use them), followed by the flat children of `Handlers`, then `Infrastructure`, then `Gameplay`. Two gameplay submodules — `Combat/Clashing`, `Roles/KillerSelector`, and `Roles/SurvivorSelector` — are appended explicitly at the end.
+    The server constructs an ordered list of `ModuleScript` instances to load. Order matters: `DeltaRegistry` is always first (so all Delta remotes are declared before any handler tries to use them), followed by the flat children of `Handlers`, then `Infrastructure`, then `Gameplay`. Three gameplay submodules — `Combat/Clashing`, `Roles/KillerSelector`, and `Roles/SurvivorSelector` — are appended explicitly at the end.
 
     ```luau
     local infrastructure = Modules:FindFirstChild("Infrastructure")

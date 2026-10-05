@@ -75,7 +75,7 @@ newHitbox.HumanoidTouched:Connect(function(humanoid, character)
     Util:ConfirmHit(character)
 end)
 
--- Activate after spawn delay
+-- Activate after spawn delay (defined in ability config, not in Hitbox.new)
 task.delay(slashConfig.HitboxSpawnDelay, function()  -- 0.4 seconds
     newHitbox:CreateHitbox()
 end)
@@ -93,28 +93,28 @@ end)
   The part whose `CFrame` drives the hitbox position each frame. CastSystem reads `Part.AssemblyLinearVelocity` for physics prediction and lag-compensation snap.
 </ParamField>
 
-<ParamField path="HitboxOffset" type="CFrame">
+<ParamField path="GetCFrame" type="(hitbox) -> CFrame">
+  Optional function that, when provided, is called instead of reading `Part.CFrame` to resolve the hitbox world position each frame. Use this when you need fully custom CFrame logic independent of a part.
+</ParamField>
+
+<ParamField path="Offset" type="CFrame" default="CFrame.new()">
   CFrame offset applied on top of the resolved part CFrame before the spatial query. In the Slash ability this is `CFrame.new(0, -1, -4)` — 1 stud down and 4 studs in front of the root.
 </ParamField>
 
-<ParamField path="HitboxSize" type="Vector3">
+<ParamField path="Size" type="Vector3" default="Vector3.new()">
   Dimensions of the box used for `workspace:GetPartBoundsInBox`. For `Shape = "Circle"` or `"Radius"`, `Size` is derived from `Radius` if provided. The Slash ability uses `Vector3.new(4.5, 6, 5.2)`.
 </ParamField>
 
-<ParamField path="HitboxAmount" type="number">
-  Maximum number of cast iterations the hitbox performs before self-destroying. Each `Heartbeat` tick counts as one cast (unless `HitboxDelay` throttles it). The Slash ability uses `16`.
+<ParamField path="Amount" type="number" default="1">
+  Maximum number of cast iterations the hitbox performs before self-destroying. Each `Heartbeat` tick counts as one cast (unless `Delay` throttles it). The Slash ability uses `16`.
 </ParamField>
 
-<ParamField path="HitboxDelay" type="number">
+<ParamField path="Delay" type="number" default="0">
   Minimum seconds between consecutive casts. Acts as a per-hitbox rate limiter independent of frame rate. The Slash ability uses `0.011` seconds.
 </ParamField>
 
-<ParamField path="HitboxLifetime" type="number">
-  Wall-clock seconds after `CreateHitbox()` is called before the hitbox auto-destroys via `task.delay`. The Slash ability uses `0.16` seconds, creating a tight strike window.
-</ParamField>
-
-<ParamField path="HitboxSpawnDelay" type="number">
-  Seconds after ability activation before `CreateHitbox()` is called. Defined in the ability config and consumed by `Server.luau`. The Slash ability uses `0.4` seconds — timed to align with the animation wind-up.
+<ParamField path="Lifetime" type="number">
+  Wall-clock seconds after `CreateHitbox()` is called before the hitbox auto-destroys via `task.delay`. The Slash ability uses `0.16` seconds, creating a tight strike window. If omitted, the hitbox lives until `DestroyAll()` is called explicitly or `Amount` is exhausted.
 </ParamField>
 
 <ParamField path="Damage" type="number">
@@ -125,16 +125,24 @@ end)
   Knockback force. A `number` applies force along `KnockbackDirection`. A `Vector3` sets both direction and magnitude. A `function` receives `(character, humanoid, ownerCharacter, hitbox)` and returns the resolved value.
 </ParamField>
 
+<ParamField path="KnockbackDirection" type="Vector3 | function">
+  Direction for knockback when `Knockback` is a number. Can be a `Vector3` or a function `(character, humanoid, ownerCharacter, hitbox) -> Vector3`. Defaults to the hitbox part's `LookVector` if not provided.
+</ParamField>
+
 <ParamField path="KnockbackDuration" type="number" default="0.2">
   Duration in seconds of the knockback impulse via `Util:ApplyForce`.
 </ParamField>
 
 <ParamField path="HitType" type="string" default="Default">
-  `"Default"` — continues hitting until `HitboxAmount` is exhausted. `"StopOnHit"` — immediately destroys the hitbox upon the first humanoid or object contact. The Slash ability uses `"StopOnHit"`.
+  `"Default"` — continues hitting until `Amount` is exhausted. `"StopOnHit"` — immediately destroys the hitbox upon the first humanoid or object contact. The Slash ability uses `"StopOnHit"`.
 </ParamField>
 
 <ParamField path="HitMode" type="string" default="Humanoid">
   `"Humanoid"` — only fire `HumanoidTouched`. `"Object"` — only fire `ObjectTouched`. `"Both"` — fire both signals.
+</ParamField>
+
+<ParamField path="FriendlyFire" type="boolean" default="false">
+  When `true`, the hitbox can hit characters on the same team as the owner. By default, characters parented under the same folder as the owner are excluded.
 </ParamField>
 
 <ParamField path="UseClient" type="boolean" default="auto">
@@ -158,7 +166,7 @@ end)
 </ParamField>
 
 <ParamField path="HitOnce" type="boolean" default="false">
-  When `true`, each individual character can only be hit once per hitbox lifetime regardless of `HitboxAmount` or `HitboxDelay`.
+  When `true`, each individual character can only be hit once per hitbox lifetime regardless of `Amount` or `Delay`.
 </ParamField>
 
 <ParamField path="HitCooldown" type="number" default="0">
@@ -167,6 +175,10 @@ end)
 
 <ParamField path="Shape" type="string" default="Box">
   `"Box"` — rectangular overlap via `GetPartBoundsInBox`. `"Circle"` or `"Radius"` — spherical overlap via `GetPartBoundsInRadius`. Circle hitboxes use the closest point on each overlapping part to the sphere centre for precise distance filtering.
+</ParamField>
+
+<ParamField path="Blacklist" type="{ Instance }">
+  Array of instances to exclude from overlap detection. Passed directly to `OverlapParams.FilterDescendantsInstances`. Use `Hitbox:AddToBlacklist(instance)` and `Hitbox:RemoveFromBlacklist(instance)` to modify the list after construction.
 </ParamField>
 
 ---
@@ -209,7 +221,7 @@ When CastSystem needs to evaluate a player-owned hitbox it calls `ClientSnapshot
 
 ```luau
 -- Automatic rewind used in CastSystem.resolveClientCFrame
-local rewind    = api.getLatencyCompensation(hitbox, player)  -- clamped [MIN_CLIENT_REWIND, MaxLatencyCompensation]
+local rewind     = api.getLatencyCompensation(hitbox, player)  -- clamped [MIN_CLIENT_REWIND, MaxLatencyCompensation]
 local targetTime = workspace:GetServerTimeNow() - rewind * 0.5
 local snapshot   = clientSnapshots.Sample(player, hitbox.Part, targetTime)
 ```
@@ -232,43 +244,45 @@ Key constants:
 
 ## JohnDoe Slash — Complete Server Ability Example
 
-The Slash ability in `JohnDoe/Abilities/Slash/Server.luau` is the canonical example of hitbox usage:
+The Slash ability in `JohnDoe/Abilities/Slash/Server.luau` is the canonical example of hitbox usage. Note that `HitboxSpawnDelay` comes from the ability's own config table, not from `Hitbox.new` itself.
 
 ```luau
-local Hitbox    = require(ReplicatedStorage.Systems.Gameplay.ClientManagers.HitboxManager)
-local Paragon   = require(ReplicatedStorage.Systems.Gameplay.ClientManagers.AbilityManager)
+local Hitbox     = require(ReplicatedStorage.Systems.Gameplay.ClientManagers.HitboxManager)
+local Paragon    = require(ReplicatedStorage.Systems.Gameplay.ClientManagers.AbilityManager)
 local Animations = require(ReplicatedStorage.Systems.Player.Animations)
-local Sounds    = require(ReplicatedStorage.Systems.Gameplay.StatusEffects.Sounds)
-local Util      = require(ReplicatedStorage.Modules.Utility.Util)
+local Sounds     = require(ReplicatedStorage.Systems.Gameplay.StatusEffects.Sounds)
+local Util       = require(ReplicatedStorage.Modules.Utility.Util)
+local StatusEffects = require(ReplicatedStorage.Systems.Gameplay.StatusEffects)
+local ActorHandler  = require(game.ServerScriptService.Modules.Handlers.ActorHandler)
 
 function SlashServer:Init(Character, Actor)
     if Character:GetAttribute("Stunned") then return end
 
-    local cancelCtx  = AbilityCancel.Start(Character, "Slash")
+    local cancelCtx   = AbilityCancel.Start(Character, "Slash")
     local slashConfig = Actor.Config.AbilityInfo.Slash
-    -- slashConfig.HitboxOffset   = CFrame.new(0, -1, -4)
-    -- slashConfig.HitboxSize     = Vector3.new(4.5, 6, 5.2)
-    -- slashConfig.HitboxAmount   = 16
-    -- slashConfig.HitboxDelay    = 0.011
-    -- slashConfig.HitboxLifetime = 0.16
-    -- slashConfig.HitboxSpawnDelay = 0.4
-    -- slashConfig.Damage         = 16
+    -- slashConfig.HitboxOffset      = CFrame.new(0, -1, -4)
+    -- slashConfig.HitboxSize        = Vector3.new(4.5, 6, 5.2)
+    -- slashConfig.HitboxAmount      = 16
+    -- slashConfig.HitboxDelay       = 0.011
+    -- slashConfig.HitboxLifetime    = 0.16
+    -- slashConfig.HitboxSpawnDelay  = 0.4   (ability config, not a Hitbox.new field)
+    -- slashConfig.Damage            = 16
 
     local newHitbox = Hitbox.new({
-        Owner          = Character,
-        Blacklist      = {Character},
-        HitType        = "StopOnHit",
-        Damage         = slashConfig.Damage,
-        WallBlockable  = true,
+        Owner           = Character,
+        Blacklist       = {Character},
+        HitType         = "StopOnHit",
+        Damage          = slashConfig.Damage,
+        WallBlockable   = true,
         WallBlockDamage = slashConfig.Damage,
-        Part           = Character.HumanoidRootPart,
-        Offset         = slashConfig.HitboxOffset,
-        Size           = slashConfig.HitboxSize,
-        Amount         = slashConfig.HitboxAmount,
-        Delay          = slashConfig.HitboxDelay,
-        Lifetime       = slashConfig.HitboxLifetime,
-        ExecuteOnKill  = true,
-        UseClient      = true,
+        Part            = Character.HumanoidRootPart,
+        Offset          = slashConfig.HitboxOffset,
+        Size            = slashConfig.HitboxSize,
+        Amount          = slashConfig.HitboxAmount,
+        Delay           = slashConfig.HitboxDelay,
+        Lifetime        = slashConfig.HitboxLifetime,
+        ExecuteOnKill   = true,
+        UseClient       = true,
     })
 
     cancelCtx:Add(function()
@@ -282,11 +296,12 @@ function SlashServer:Init(Character, Actor)
         Looped = false,
     })
     local SlashSFX = Sounds:LoadSound({
-        SoundId     = Actor.Config.Sounds.SlashNoise,
-        Parent      = Character.PrimaryPart,
+        SoundId      = Actor.Config.Sounds.SlashNoise,
+        Parent       = Character.PrimaryPart,
         DestroyOnEnd = true,
     })
     if SlashAnim then
+        SlashAnim.Looped   = false
         SlashAnim.Priority = Enum.AnimationPriority.Action4
         SlashAnim:Play(0.05, 1, 1)
         SlashSFX:Play()
@@ -294,26 +309,41 @@ function SlashServer:Init(Character, Actor)
 
     -- Hit callback
     newHitbox.HumanoidTouched:Connect(function(_, character)
+        local hrp            = character and character:FindFirstChild("HumanoidRootPart")
+        local victimHumanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local player         = game.Players:GetPlayerFromCharacter(character)
+
         Util:ConfirmHit(character)
-        Util:CreateSpeedMultiplier(character, 1.45, "HitSpeedBonus", 1.1)
+        Util:CreateSpeedMultiplier(
+            character,
+            slashConfig.HitSpeedBonusMultiplier or 1.5,
+            "HitSpeedBonus",
+            slashConfig.HitSpeedBonusDuration or 1.25
+        )
 
         local hitSound = Sounds:LoadSound({
-            Name        = "SlashHit",
-            SoundId     = Actor.Config.Sounds.SlashHit,
-            Parent      = Character.HumanoidRootPart,
+            Name         = "SlashHit",
+            SoundId      = Actor.Config.Sounds.SlashHit,
+            Parent       = Character.HumanoidRootPart,
             DestroyOnEnd = true,
         })
-        hitSound:Play()
+
+        if player then
+            ActorHandler:CancelAbilities(player, "cancel")
+        end
+
+        if hrp then
+            hitSound:Play()
+        end
 
         -- Ragdoll launch on kill
         task.delay(0.05, function()
-            local hrp = character:FindFirstChild("HumanoidRootPart")
-            local hum = character:FindFirstChildOfClass("Humanoid")
-            if hrp and hum and hum.Health <= 0 then
-                local dir = Character.HumanoidRootPart.CFrame.LookVector
-                character:SetAttribute("BrokenRagdollLaunchVelocity", dir * 165 + Vector3.new(0, 75, 0))
-                character:SetAttribute("BrokenRagdollLaunchNonce", os.clock())
+            if not (hrp and victimHumanoid and victimHumanoid.Health <= 0) then
+                return
             end
+            local dir = Character.HumanoidRootPart.CFrame.LookVector
+            character:SetAttribute("BrokenRagdollLaunchVelocity", (dir * 165) + Vector3.new(0, 75, 0))
+            character:SetAttribute("BrokenRagdollLaunchNonce", os.clock())
         end)
     end)
 
@@ -364,7 +394,7 @@ Animations = {
 For character-level collision detection (not ability hitboxes), the server broadcasts each player's "bean" geometry at 30 Hz via the `CharacterBeanHitboxState` Delta event. The bean is a cylinder derived from the character's root part dimensions plus humanoid hip height. Only clients with `CharacterBeanHitboxReady = true` attribute receive these packets.
 
 ```luau
--- Geometry derivation
+-- Geometry derivation (from Hitbox.GetCharacterBeanGeometry)
 local diameter = math.max(3.5, math.max(rootPart.Size.X, rootPart.Size.Z) * 1.75)
 local height   = math.max(5, rootPart.Size.Y + humanoid.HipHeight * 2.5)
 local yOffset  = math.max(0.25, (height - rootPart.Size.Y) * 0.2)

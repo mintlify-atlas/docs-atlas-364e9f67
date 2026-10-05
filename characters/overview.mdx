@@ -46,7 +46,7 @@ The character system in Shattered Reality is split into two asymmetric roles —
 
 `Characters.luau` runs entirely in `ReplicatedStorage` and is safe to `require` on both server and client.
 
-```lua
+```luau
 -- ReplicatedStorage/Modules/Data/Characters.luau (simplified)
 local charactersRoot = ReplicatedStorage:WaitForChild("Systems"):WaitForChild("Characters")
 local skinsRoot      = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("Skins")
@@ -74,7 +74,7 @@ Every character Config returns a plain Luau table. The fields below are treated 
 <Accordion title="Info">
   Human-readable metadata displayed in menus.
 
-  ```lua
+  ```luau
   Info = {
       DisplayName = "John Doe",   -- shown in UI
       Description = "The Corrupted Pursuer",
@@ -84,7 +84,7 @@ Every character Config returns a plain Luau table. The fields below are treated 
 
 <Accordion title="Class, Price, MaxHealth">
 
-  ```lua
+  ```luau
   Class     = "Rushdown",  -- used by Characters:IsActorInClass()
   Price     = 0,           -- unlock cost (0 = free)
   MaxHealth = 1000,        -- copied to actor_config.MaxHealth
@@ -115,7 +115,7 @@ Every character Config returns a plain Luau table. The fields below are treated 
     Stamina regenerated per second while not sprinting.
   </ParamField>
 
-  ```lua
+  ```luau
   SprintConfig = {
       Stamina     = 115,
       MaxStamina  = 115,
@@ -141,12 +141,12 @@ Every character Config returns a plain Luau table. The fields below are treated 
   | `Cooldown` | Base cooldown in seconds |
   | `Damage` | Base damage dealt on hit |
   | `HitboxSize` | `Vector3` extents of the server-side hitbox |
-  | `HitboxAmount` | Maximum hitbox samples per activation (alias: `Amount`) |
-  | `HitboxDelay` | Seconds between hitbox samples (alias: `Delay`) |
+  | `HitboxAmount` | Maximum hitbox samples per activation (normalized to `Amount`) |
+  | `HitboxDelay` | Seconds between hitbox samples (normalized to `Delay`) |
   | `MaxCharges` | If present, ability uses a charge system |
-  | `ChargeRegen` | Seconds per charge regenerated (alias: `ChargeRegenTime`) |
+  | `ChargeRegenTime` | Deprecated key; normalized to the canonical `ChargeRegen` field |
 
-  ```lua
+  ```luau
   AbilityInfo = {
       Slash = {
           Name    = "Slash",
@@ -163,7 +163,7 @@ Every character Config returns a plain Luau table. The fields below are treated 
 <Accordion title="ChaseConfig (Killers only)">
   Drives the proximity-based chase music system. `Radius` is the detection range in studs; `Layers` maps each music layer to a time-range within the audio track.
 
-  ```lua
+  ```luau
   ChaseConfig = {
       Radius = 100,
       ID     = "rbxassetid://...",  -- chase music asset
@@ -190,7 +190,7 @@ Every character Config returns a plain Luau table. The fields below are treated 
 
 Before a config is returned to any caller, `normalize_ability_config` rewrites deprecated field names to their canonical forms:
 
-```lua
+```luau
 local ability_aliases = {
     ChargeRegenTime = "ChargeRegen",
     HitboxAmount    = "Amount",
@@ -204,7 +204,7 @@ If an ability has `MaxCharges` but no `ChargeRegen`, the normalizer automaticall
 
 `Characters.Global` holds server-wide tuning applied on top of individual configs during Last Man Standing mode:
 
-```lua
+```luau
 Characters.Global = {
     StaminaTuning = {
         LMSCaps = {
@@ -219,7 +219,7 @@ These caps are applied by the gameplay layer; the `Characters` module itself onl
 
 ## API reference
 
-```lua
+```luau
 local Characters = require(ReplicatedStorage.Modules.Data.Characters)
 
 -- Fetch a normalized killer config (with skin applied if provided)

@@ -1,7 +1,7 @@
 ---
 title: "Status Effects — Applying and Removing Buffs/Debuffs"
 sidebarTitle: "Status Effects"
-description: "How the StatusEffects system works in Shattered Reality: GiveStatus, ClearStatus, ManageStatus network event, and every built-in effect with its level table."
+description: "How the StatusEffects system works in Shattered Reality: GiveStatus, ClearStatus, ManageStatus event, and every built-in effect with its level table."
 ---
 
 The `StatusEffects` module lives at `ReplicatedStorage/Systems/Gameplay/StatusEffects/init.luau` and is shared between server and client. Status effects are resolved by name to `ModuleScript` children of that folder (including sub-folders such as `KillerSpecific/`). The module tracks every active effect in `StatusEffects.CurrentStatuses`, drives a single `RunService.Heartbeat` loop for tick-based effects, and synchronises state to the relevant client via the `ManageStatus` `DeltaNetwork` event.

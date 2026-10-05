@@ -288,6 +288,7 @@ The Backshotting check overrides `Strike()` with its own punishment logic — it
     | `SwitchGoal` | `5` | Direction switches required within the window to trigger. |
     | `SwitchWindow` | `3 s` | Time window in which switches are counted. |
     | `PersistTime` | `0.25 s` | How long rear contact is maintained after the ray misses. |
+    | `AlignDotThreshold` | `0.35` | Minimum dot product between the attacker's look vector and the victim's facing direction to consider movement aligned (unused guard in current logic, present in Configuration). |
     | `DetectionCooldown` | `1.0 s` | Minimum time between consecutive detections. |
     | `PunishRagdollDuration` | `4 s` | `DeathRagdollDuration` attribute set on the character. |
     | `PunishRespawnDelay` | `4 s` | `RespawnDelay` attribute set on the character. |

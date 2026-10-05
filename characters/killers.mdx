@@ -56,7 +56,7 @@ John Doe ("The Corrupted Pursuer") is a **Rushdown**-class killer built around c
   | HitSpeedBonusMultiplier | 1.45× |
   | HitSpeedBonusDuration | 1.1 s |
 
-  ```lua
+  ```luau
   Slash = {
       Type     = "AbilityM1",
       Cooldown = 1.7,
@@ -114,7 +114,7 @@ John Doe ("The Corrupted Pursuer") is a **Rushdown**-class killer built around c
 
   When JaneDoe is the last survivor and John Doe is the killer, the Manager replaces the standard chase theme with an alternate audio track defined in `LastManStandingEmotionalData`:
 
-  ```lua
+  ```luau
   Relations = { "JaneDoe" },
   LastManStandingEmotionalData = {
       JaneDoe = {
@@ -192,7 +192,7 @@ c00lkidd ("The Digital Menace") is a **Zoner**-class killer whose kit revolves a
 
   A channelled beam attack. Cooldown and damage values are resolved at runtime and are not declared in the static Config — the ability relies on its `Ability3` type slot and animation data.
 
-  ```lua
+  ```luau
   RayOfHavoc = {
       Name = "Ray Of Havoc",
       Type = "Ability3",
@@ -479,7 +479,7 @@ Wirefly ("The Graceful Firefly") is classified under the generic `Killer` class.
 
 ## Reading killer configs at runtime
 
-```lua
+```luau
 local Characters = require(game.ReplicatedStorage.Modules.Data.Characters)
 
 -- Full merged config (base + skin override + rig reference)

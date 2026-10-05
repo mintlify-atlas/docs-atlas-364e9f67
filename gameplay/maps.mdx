@@ -1,5 +1,5 @@
 ---
-title: "Maps — Selectable Maps and Config System"
+title: "Maps — Selectable Maps, Config, and Lighting System"
 sidebarTitle: "Maps"
 description: "How selectable maps work in Shattered Reality: Config structure, per-map lighting, lifecycle hooks, objectives, variants, and the full list of 16 maps."
 ---
@@ -45,7 +45,7 @@ Maps with `Weight = 0` (e.g. `HorrorHotel`, `Ravenrock`, `C00lCarnival`, `Planet
 
 Every selectable map folder follows the same convention:
 
-```
+```text
 SelectableMaps/
 └── MyMap/
     ├── Config.luau          -- required: metadata, audio, lifecycle hooks, objectives
@@ -216,7 +216,7 @@ When `applyMapObjectives` runs after cloning, it resolves each `Type` to a `Modu
 
 Spawns are read from the map's `Spawns/` folder inside the cloned `Map` model:
 
-```
+```text
 Map/
 └── Spawns/
     ├── Killers/    -- one or more BaseParts (any type)

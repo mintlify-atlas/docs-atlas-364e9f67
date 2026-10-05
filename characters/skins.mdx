@@ -12,7 +12,7 @@ No gameplay stats are altered by a skin unless the skin's `Config.luau` explicit
 
 Skins live under `ReplicatedStorage/Assets/Skins/` and mirror the same Killer/Survivor split as the character system:
 
-```
+```text
 Assets/Skins/
 ├── Killers/
 │   └── TheClown/
@@ -43,7 +43,7 @@ Assets/Skins/
 Each skin is a **Folder** inside the character's skin directory. The folder name is the canonical skin name used in all API calls. A skin without a `Config.luau` is invisible to the skin system — `GetSkinConfigModule` will return `nil` and the base config is used unmodified.
 
 <Note>
-  Skin folder names beginning with `#` denote **limited or special-access skins** (e.g. `#YourselfKane`, `#Yourself2Kane`). The `#` is part of the folder name and must be included in the exact skin name string. However, `Characters.ResolveSkinName` uses fuzzy matching via `normalize_search_text`, which strips `#` (along with `!`, spaces, underscores, and hyphens) when scoring candidates — so passing `"yourself"` as a query will still find `#YourselfKane`.
+  Skin folder names beginning with `#` denote **limited or special-access skins** (e.g. `#YourselfKane`, `#Yourself2Kane`). The `#` is part of the folder name and must be included in the exact skin name string. `Characters.ResolveSkinName` uses fuzzy matching via `normalize_search_text`, which strips leading `!` characters and removes spaces, underscores, and hyphens — but does **not** strip `#`. A query like `"yourself"` still resolves to `#YourselfKane` because `score_match` uses `string.find` for substring matching, and `"yourself"` is a substring of `"#yourselfkane"`.
 </Note>
 
 ## Config.luau structure
@@ -52,7 +52,7 @@ A skin's `Config.luau` returns a partial character config table. Only the fields
 
 The `#YourselfKane` skin is a representative example:
 
-```lua
+```luau
 -- Assets/Skins/Survivors/Kane/#YourselfKane/Config.luau
 return {
     Info = {
@@ -76,7 +76,7 @@ Fields omitted from the skin config — `MaxHealth`, `SprintConfig`, `AbilityInf
 
 If a skin folder contains a `Behavior.luau` (or a `Behavior/` folder with an `init.luau`), `Characters.GetSkinManagerModule` will return it. The gameplay layer is responsible for requiring and initialising it; the `Characters` module only locates the file.
 
-```lua
+```luau
 -- How the gameplay layer retrieves a skin's behavior module
 local skinBehavior = Characters.GetSkinManagerModule("Survivor", "Kane", "#YourselfKane")
 if skinBehavior then
@@ -105,9 +105,9 @@ A `Behavior.luau` is optional. Skins that only swap the rig's appearance via `In
 
 After all merges, `normalize_actor_config` runs a final normalization pass (aliasing `Sprint`↔`SprintConfig`, `Abilities`↔`AbilityInfo`, and running `normalize_ability_config` on every ability entry), then `actor_config.Rig` is resolved via `Characters.GetActorRig`.
 
-```lua
+```luau
 -- Full pipeline in Characters.GetActorConfig
-local function Characters.GetActorConfig(actor_type, actor_name, skin_name)
+function Characters.GetActorConfig(actor_type, actor_name, skin_name)
     local default_config = load_default_actor_config(actor_type, actor_name)
     local actor_config   = Characters:ApplyToActorConfig(default_config, actor_type, actor_name)
 
@@ -129,7 +129,7 @@ end
 
 ## Skin discovery API
 
-```lua
+```luau
 local Characters = require(game.ReplicatedStorage.Modules.Data.Characters)
 
 -- List all skin names for a character (always includes "Default" as first entry)
@@ -195,7 +195,7 @@ local rig = Characters.GetActorRig("Survivor", "Kane", "Dued1Kane")
   <Step title="Write Config.luau">
     Return a table containing only the fields you want to override. At minimum include `Info.DisplayName` and any `Instances` references your rig needs.
 
-    ```lua
+    ```luau
     -- Assets/Skins/Survivors/Kane/MyCoolKane/Config.luau
     return {
         Info = {
@@ -215,7 +215,7 @@ local rig = Characters.GetActorRig("Survivor", "Kane", "Dued1Kane")
   <Step title="Add Behavior.luau (optional)">
     Create `Behavior.luau` in the skin folder if you need client-side effects. Expose an `Init(character, actor)` function; the client manager will call it after the skin is equipped.
 
-    ```lua
+    ```luau
     -- Assets/Skins/Survivors/Kane/MyCoolKane/Behavior.luau
     local Behavior = {}
 

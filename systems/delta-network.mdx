@@ -166,7 +166,7 @@ Every `Delta(name, ...)` call returns a `DeltaType` object. The full method set 
 </ParamField>
 
 <ParamField path="Handle(handler)" type="() -> ()">
-  Registers a server-side handler function for response-based events. When called through `RequestServer`, this function receives `(player, ...)` and its return values are sent back to the client.
+  Registers a handler function for response-based events. When called through `RequestServer`, this function receives `(player, ...)` and its return values are sent back to the client.
 
   ```luau
   local GetData = Delta.Function("GetData", {Delta.Instance}, {Delta.Table})

@@ -347,17 +347,18 @@ function AxeSwing:Init(character, actor)
         if not (character.Parent and root.Parent) then return end
 
         local axeHitbox = Hitbox.new({
-            Owner    = character,
-            Blacklist = { character },
-            Part     = root,
-            Offset   = config.HitboxOffset,
-            Size     = config.HitboxSize,
-            Amount   = config.HitboxAmount,
-            Delay    = config.HitboxDelay,
-            Lifetime = config.HitboxLifetime,
-            Damage   = config.Damage,
-            HitType  = "StopOnHit",
-            HitOnce  = true,
+            Owner           = character,
+            Blacklist       = { character },
+            Part            = root,
+            Offset          = config.HitboxOffset,
+            Size            = config.HitboxSize,
+            Amount          = config.HitboxAmount,
+            Delay           = config.HitboxDelay,
+            Lifetime        = config.HitboxLifetime,
+            Damage          = config.Damage,
+            HitType         = "StopOnHit",
+            HitOnce         = true,
+            PredictVelocity = true,
         })
 
         axeHitbox.HumanoidTouched:Connect(function(_, targetCharacter)

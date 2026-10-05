@@ -203,10 +203,11 @@ return {
 
 ### Write Manager/init.luau
 
-The Manager is a shared module loaded on both the server and the client. It must return a table that the character system stores as `Behavior`. Two lifecycle methods are called automatically:
+The Manager is a shared module loaded on both the server and the client. It must return a table that the character system stores as `Behavior`. Key members called automatically:
 
-- **`Behavior:Init(Character, Actor)`** — called once after the character spawns. `RunService:IsServer()` / `RunService:IsClient()` guards split server-only from client-only work.
+- **`Behavior:Init(Character, Actor)`** — called once after the character spawns. In killer managers all meaningful work is server-side; guard with `if RunService:IsClient() then return end` and place everything below that guard.
 - **`Behavior.Abilities`** — an ordered array of `ModuleScript` references. The ability manager loads these in sequence and binds each one to its `Type` slot.
+- **`Behavior:OnExecute(killerRig, survivorRig)`** — called when the killer performs an execution. Implement this only if your killer has custom execution behaviour; an empty body is valid.
 
 ```luau
 -- ReplicatedStorage/Systems/Characters/Killers/YourKillerName/Manager/init.luau
@@ -227,8 +228,8 @@ Behavior.Abilities = {
 
 -- ── Lifecycle ─────────────────────────────────────────────────────────────
 function Behavior:Init(Character, Actor)
+    -- Killer Manager logic runs on the server only. Exit early on the client.
     if RunService:IsClient() then
-        -- Client-only setup (UI hooks, local VFX subscriptions, etc.)
         return
     end
 
@@ -241,9 +242,10 @@ return Behavior
 ```
 
 <Note>
-  The Manager module is shared — it is `require`d on both server and client.
-  Always guard server-only calls (e.g. `DialogueHandler`, `ActorHandler`) with
-  `if not RunService:IsClient()` or they will error on the client.
+  The Manager module is required on both server and client. Killer managers
+  typically return immediately on the client — all `DialogueHandler`,
+  `ActorHandler`, and AI calls belong below the `if RunService:IsClient() then return end`
+  guard, or they will error on the client.
 </Note>
 
 ### Write a Server Ability (Server.luau)

@@ -205,7 +205,7 @@ Brickbattler ("The Swift Rocketeer") is a **Sentinel**-class survivor specialisi
   | KillerKnockbackDuration | 0.16 s |
   | PierceCooldown reduction | 9 s |
 
-  ```lua
+  ```luau
   RocketLauncher = {
       Type        = "Ability2",
       Cooldown    = 40,
@@ -369,7 +369,7 @@ Nova is a **Survivalist**-class survivor (displayed as "Vintage" / "The Starligh
 
 ## Reading survivor configs at runtime
 
-```lua
+```luau
 local Characters = require(game.ReplicatedStorage.Modules.Data.Characters)
 
 -- Normalized base config
@@ -389,5 +389,5 @@ print(pistol.MaxCharges)    --> 15
 ```
 
 <Tip>
-  Survivors whose folder name begins with `!` (e.g. `!Vintage`) are resolved by `normalize_search_text`, which strips the leading `!` before comparing. Passing `"Vintage"` or `"vintage"` to `GetSurvivorConfig` will find the `!Vintage` folder correctly.
+  Survivors whose folder name begins with `!` (e.g. `!Vintage`) are keyed in `Characters.Survivors` under their full name including the `!`. Pass `"!Vintage"` to `GetSurvivorConfig` to retrieve the config directly. The `!`-stripping behavior of `normalize_search_text` applies to folder discovery (e.g. `GetCharacterFolder`, `find_child_insensitive`) but not to the direct table lookup in `GetSurvivorConfig`.
 </Tip>
